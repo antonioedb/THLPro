@@ -1,0 +1,2 @@
+CREATE DATABASE thlpro;
+CREATE DATABASE thlpro_test;

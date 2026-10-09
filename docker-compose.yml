@@ -1,0 +1,90 @@
+# THLPro — Orquestração de serviços (produção / ambiente local via Docker)
+# Uso: docker compose up -d --build
+# Variáveis: cópias de .env.example para .env (mesma pasta)
+
+name: thlpro
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: thlpro_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-thlpro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thlpro}
+      POSTGRES_DB: ${POSTGRES_DB:-thlpro}
+      TZ: America/Sao_Paulo
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/scripts/create_db.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-thlpro} -d ${POSTGRES_DB:-thlpro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: thlpro_redis
+    restart: unless-stopped
+    profiles: ["with-redis"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: thlpro_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-thlpro}:${POSTGRES_PASSWORD:-thlpro}@db:5432/${POSTGRES_DB:-thlpro}
+      USE_REDIS: ${USE_REDIS:-false}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,https://localhost}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+        required: false
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - api_logs:/app/logs
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m scripts.seed &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-2}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: thlpro_web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  pgdata:
+  api_logs:
