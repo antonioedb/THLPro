@@ -1,23 +1,30 @@
 from __future__ import annotations
 
+
 import base64
 import os
 
+
 IS_WINDOWS = os.name == "nt"
+
 
 try:
     import win32event  # type: ignore
     import win32api  # type: ignore
     import win32con  # type: ignore
+    import winerror  # type: ignore
 except Exception:  # pragma: no cover - ambiente Linux
     win32event = None
     win32api = None
     win32con = None
+    winerror = None
+
 
 try:
     import win32crypt  # type: ignore
 except Exception:  # pragma: no cover - ambiente Linux
     win32crypt = None
+
 
 
 def protect_data(raw: str) -> str:
@@ -26,6 +33,7 @@ def protect_data(raw: str) -> str:
         encrypted = win32crypt.CryptProtectData(data, "THLPro API Key", None, None, None, 0)
         return "dpapi:" + base64.b64encode(encrypted).decode("ascii")
     return "local:" + base64.b64encode(data).decode("ascii")
+
 
 
 def unprotect_data(payload: str) -> str:
@@ -40,10 +48,11 @@ def unprotect_data(payload: str) -> str:
     raise RuntimeError("Formato de segredo inválido.")
 
 
+
 def create_single_instance_lock(name: str):
-    if IS_WINDOWS and win32event and win32api and win32con:
+    if IS_WINDOWS and win32event and win32api and win32con and winerror:
         handle = win32event.CreateMutex(None, False, name)
-        already_running = win32api.GetLastError() == win32con.ERROR_ALREADY_EXISTS
+        already_running = win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS
         return handle, already_running
     lock_safe = name.replace('\\', '_')
     lock_path = f"/tmp/{lock_safe}.lock"
@@ -52,6 +61,7 @@ def create_single_instance_lock(name: str):
     with open(lock_path, "w", encoding="utf-8") as fp:
         fp.write(str(os.getpid()))
     return lock_path, False
+
 
 
 def release_single_instance_lock(lock_obj) -> None:

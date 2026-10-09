@@ -152,5 +152,5 @@ async def synchronize(
                 ),
             ) from exc
 
-    summary = await sync_from_file(db, "/home/ubuntu/thlpro/backend/tests/fixtures/b3_series_sample.txt")
+    summary = await sync_from_file(db, "data/series_autorizadas.txt")
     return SyncSummary(**summary)

@@ -185,3 +185,31 @@ class SystemSetting(Base):
     value: Mapped[dict] = mapped_column(JSON, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+class Lease(Base):
+    __tablename__ = "leases"
+
+    option_series_id: Mapped[int] = mapped_column(
+        ForeignKey("option_series.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    client_id: Mapped[int] = mapped_column(
+        ForeignKey("clients.id"),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    option_series: Mapped[OptionSeries] = relationship("OptionSeries")
+    client: Mapped[Client] = relationship("Client")
+
+    __table_args__ = (
+        Index("ix_leases_expires_at", "expires_at"),
+    )

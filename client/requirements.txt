@@ -5,3 +5,4 @@ pywin32==306; platform_system == "Windows"
 pythonnet==3.0.3; platform_system == "Windows"
 pyinstaller==6.11.0
 pytest==8.3.3
+tzdata

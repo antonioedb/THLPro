@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 UTC = timezone.utc
@@ -7,10 +8,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Iterable
 
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+
 from app.models import Asset, OptionSeries, OptionType, SynchronizationLog
+
 
 
 @dataclass
@@ -24,35 +28,57 @@ class ParsedSeries:
     needs_review: bool = False
 
 
+
 B3_SAMPLE_URL = "https://arquivos.b3.com.br/s3/indicadores/opcoes/serie_opcoes.txt"
+
+
+# Apelidos opcionais (caso queira forçar algum mapeamento específico)
+ASSET_ALIASES = {
+    # "BOVA": "BOVA11",
+}
 
 
 def parse_b3_lines(lines: Iterable[str]) -> list[ParsedSeries]:
     parsed: list[ParsedSeries] = []
     for raw in lines:
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith("1|"):
             continue
-        # Formato simplificado para arquivo/fixture: SYMBOL;TYPE;STRIKE;EXPIRATION(YYYY-MM-DD);UNDERLYING
-        parts = line.split(";")
-        if len(parts) != 5:
+
+        parts = line.split("|")
+        if len(parts) < 18:
             continue
-        option_symbol, option_type, strike_raw, exp_raw, underlying = parts
-        needs_review = False
-        try:
-            expiration = datetime.strptime(exp_raw, "%Y-%m-%d").date()
-            strike = Decimal(strike_raw)
-            otype = OptionType(option_type.upper())
-        except Exception:  # noqa: BLE001
-            needs_review = True
-            expiration = date.today()
-            strike = Decimal("0")
+
+        tipo_raw = parts[3].strip().upper()
+        underlying = parts[6].strip().upper()
+        underlying = ASSET_ALIASES.get(underlying, underlying)
+        option_symbol = parts[13].strip().upper()
+        strike_raw = parts[16].strip()
+        exp_raw = parts[17].strip()
+
+        if not option_symbol or not underlying:
+            continue
+
+        if tipo_raw == "OPCOES COMPRA":
             otype = OptionType.CALL
+        elif tipo_raw == "OPCOES VENDA":
+            otype = OptionType.PUT
+        else:
+            continue
+
+        try:
+            strike = Decimal(strike_raw)
+            expiration = datetime.strptime(exp_raw, "%Y%m%d").date()
+            needs_review = False
+        except Exception:
+            strike = Decimal("0")
+            expiration = date.today()
+            needs_review = True
 
         parsed.append(
             ParsedSeries(
-                asset_symbol=underlying.upper(),
-                option_symbol=option_symbol.upper(),
+                asset_symbol=underlying,
+                option_symbol=option_symbol,
                 option_type=otype,
                 strike=strike,
                 expiration_date=expiration,
@@ -63,18 +89,28 @@ def parse_b3_lines(lines: Iterable[str]) -> list[ParsedSeries]:
     return parsed
 
 
+
 async def sync_from_lines(db: AsyncSession, lines: Iterable[str], source: str = "B3") -> dict:
     parsed = parse_b3_lines(lines)
     created, updated, deactivated = 0, 0, 0
     errors: list[str] = []
 
+
     assets = {a.symbol: a for a in (await db.execute(select(Asset))).scalars().all()}
     existing_series = {s.option_symbol: s for s in (await db.execute(select(OptionSeries))).scalars().all()}
     seen_symbols: set[str] = set()
 
+
+    def find_asset_by_prefix(symbol: str):
+        if symbol in assets:
+            return assets[symbol]
+        matches = [a for s, a in assets.items() if s.startswith(symbol)]
+        return matches[0] if len(matches) == 1 else None
+
+
     for row in parsed:
         seen_symbols.add(row.option_symbol)
-        asset = assets.get(row.asset_symbol)
+        asset = find_asset_by_prefix(row.asset_symbol)
         if not asset:
             errors.append(f"Ativo base não cadastrado para série {row.option_symbol}: {row.asset_symbol}")
             continue
@@ -105,10 +141,12 @@ async def sync_from_lines(db: AsyncSession, lines: Iterable[str], source: str = 
             )
             created += 1
 
+
     for symbol, series in existing_series.items():
         if symbol not in seen_symbols and series.active:
             series.active = False
             deactivated += 1
+
 
     db.add(
         SynchronizationLog(
@@ -124,8 +162,10 @@ async def sync_from_lines(db: AsyncSession, lines: Iterable[str], source: str = 
         )
     )
 
+
     await db.commit()
     return {"created": created, "updated": updated, "deactivated": deactivated, "errors": errors}
+
 
 
 async def sync_from_file(db: AsyncSession, filepath: str) -> dict:
