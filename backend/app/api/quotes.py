@@ -1,11 +1,19 @@
 from datetime import datetime, timezone
-UTC = timezone.utc
 from decimal import Decimal
 
+
+
+UTC = timezone.utc
+
+
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import desc, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
 
 from app.config import get_settings
 from app.core.deps import get_client_from_api_key, get_current_user
@@ -15,13 +23,34 @@ from app.schemas.quotes import QuoteBatchResponse, QuoteIn
 from app.services.quote_validation import ensure_timestamp, round_by_tick, validate_future_skew
 from app.services.websocket_manager import manager
 
+
+
 router = APIRouter(prefix="/quotes", tags=["Cotações"])
 
 
-async def _resolve_asset_series(db: AsyncSession, asset_symbol: str, option_symbol: str) -> tuple[Asset, OptionSeries]:
-    asset = (await db.execute(select(Asset).where(Asset.symbol == asset_symbol.upper()))).scalar_one_or_none()
+
+
+async def _resolve_asset_series(
+    db: AsyncSession,
+    asset_symbol: str,
+    option_symbol: str,
+) -> tuple[Asset, OptionSeries]:
+    asset = (
+        await db.execute(
+            select(Asset).where(Asset.symbol == asset_symbol.upper())
+        )
+    ).scalar_one_or_none()
+
+
+
     if not asset:
-        raise HTTPException(status_code=404, detail=f"Ativo {asset_symbol} não cadastrado.")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Ativo {asset_symbol} não cadastrado.",
+        )
+
+
+
     series = (
         await db.execute(
             select(OptionSeries).where(
@@ -31,67 +60,199 @@ async def _resolve_asset_series(db: AsyncSession, asset_symbol: str, option_symb
             )
         )
     ).scalar_one_or_none()
+
+
+
     if not series:
-        raise HTTPException(status_code=404, detail=f"Série {option_symbol} não encontrada para o ativo informado.")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Série {option_symbol} não encontrada para o ativo informado.",
+        )
+
+
+
     return asset, series
 
 
-@router.post("", response_model=QuoteBatchResponse, summary="Recebe lote de cotações de opções")
+
+
+async def _resolve_series_by_id(
+    db: AsyncSession,
+    option_series_id: int,
+) -> tuple[Asset, OptionSeries]:
+    series = (
+        await db.execute(
+            select(OptionSeries).where(
+                OptionSeries.id == option_series_id,
+                OptionSeries.active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+
+
+
+    if not series:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Série {option_series_id} não encontrada ou inativa.",
+        )
+
+
+
+    asset = (
+        await db.execute(
+            select(Asset).where(Asset.id == series.asset_id)
+        )
+    ).scalar_one_or_none()
+
+
+
+    if not asset:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Ativo da série {series.option_symbol} não encontrado.",
+        )
+
+
+
+    return asset, series
+
+
+
+
+@router.post(
+    "",
+    response_model=QuoteBatchResponse,
+    summary="Recebe lote de cotações de opções",
+)
 async def post_quotes(
     payload: list[QuoteIn],
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user),
 ) -> QuoteBatchResponse:
-    return await _process_quotes(payload, db, user=current_user, client=None)
+    return await _process_quotes(
+        payload,
+        db,
+        user=current_user,
+        client=None,
+    )
 
 
-@router.post("/client", response_model=QuoteBatchResponse, summary="Recebe cotações via autenticação de cliente")
+
+
+@router.post(
+    "/client",
+    response_model=QuoteBatchResponse,
+    summary="Recebe cotações via autenticação de cliente",
+)
 async def post_quotes_client(
     payload: list[QuoteIn],
     client: Client = Depends(get_client_from_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> QuoteBatchResponse:
-    return await _process_quotes(payload, db, user=None, client=client)
+    return await _process_quotes(
+        payload,
+        db,
+        user=None,
+        client=client,
+    )
 
 
-async def _process_quotes(payload: list[QuoteIn], db: AsyncSession, user: User | None, client: Client | None) -> QuoteBatchResponse:
+
+
+async def _process_quotes(
+    payload: list[QuoteIn],
+    db: AsyncSession,
+    user: User | None,
+    client: Client | None,
+) -> QuoteBatchResponse:
     settings = get_settings()
     accepted = 0
-    rejected = []
-    for idx, row in enumerate(payload):
+    rejected: list[dict] = []
+
+
+
+    # Captura o ID antes de qualquer commit.
+    # Após commit(), atributos ORM podem expirar e causar MissingGreenlet.
+    client_id = client.id if client else None
+
+
+
+    # Deduplica o lote pela option_series_id.
+    # O PostgreSQL não resolve conflito entre duas linhas novas
+    # com a mesma chave dentro do mesmo INSERT.
+    deduplicated: dict[int, QuoteIn] = {}
+
+
+    for row in payload:
+        if row.option_series_id is not None:
+            deduplicated[row.option_series_id] = row
+
+
+
+    rows_to_process = list(deduplicated.values())
+
+
+
+    for idx, row in enumerate(rows_to_process):
         try:
             quote_ts = ensure_timestamp(row.quote_timestamp)
-            validate_future_skew(quote_ts, settings.max_future_skew_seconds)
-            asset, series = await _resolve_asset_series(db, row.asset, row.option_symbol)
+            validate_future_skew(
+                quote_ts,
+                settings.max_future_skew_seconds,
+            )
 
-            latest = (
-                await db.execute(
-                    select(MarketQuote)
-                    .where(MarketQuote.option_series_id == series.id)
-                    .order_by(desc(MarketQuote.quote_timestamp), desc(MarketQuote.received_at), desc(MarketQuote.sequence))
-                    .limit(1)
+
+
+            # Prioriza option_series_id enviado pelo cliente.
+            # Mantém compatibilidade com payload antigo usando asset + option_symbol.
+            if row.option_series_id is not None:
+                asset, series = await _resolve_series_by_id(
+                    db,
+                    row.option_series_id,
                 )
-            ).scalar_one_or_none()
+            else:
+                asset, series = await _resolve_asset_series(
+                    db,
+                    row.asset,
+                    row.option_symbol,
+                )
 
-            if latest and quote_ts <= latest.quote_timestamp:
-                # duplicado estrito se mesmo timestamp e mesmos preços
-                if (
-                    quote_ts == latest.quote_timestamp
-                    and latest.last_price == row.last_price
-                    and latest.bid == row.bid
-                    and latest.ask == row.ask
-                ):
-                    rejected.append({"index": idx, "reason": "Cotação duplicada rejeitada (mesmo timestamp e preços)."})
-                else:
-                    rejected.append({"index": idx, "reason": "Cotação rejeitada por anti-rollback (timestamp antigo ou igual)."})
-                continue
 
-            rounded_last = round_by_tick(row.last_price, Decimal(asset.tick_min))
-            rounded_bid = round_by_tick(row.bid, Decimal(asset.tick_min))
-            rounded_ask = round_by_tick(row.ask, Decimal(asset.tick_min))
-            premium = round_by_tick(row.premium if row.premium is not None else row.last_price, Decimal(asset.tick_min))
 
-            item = MarketQuote(
+            rounded_last = round_by_tick(
+                row.last_price,
+                Decimal(asset.tick_min),
+            )
+
+
+
+            rounded_bid = round_by_tick(
+                row.bid,
+                Decimal(asset.tick_min),
+            )
+
+
+
+            rounded_ask = round_by_tick(
+                row.ask,
+                Decimal(asset.tick_min),
+            )
+
+
+
+            premium = round_by_tick(
+                row.premium if row.premium is not None else row.last_price,
+                Decimal(asset.tick_min),
+            )
+
+
+
+            received_at = datetime.now(UTC)
+
+
+
+            stmt = insert(MarketQuote).values(
                 asset_id=asset.id,
                 option_series_id=series.id,
                 last_price=rounded_last,
@@ -99,15 +260,57 @@ async def _process_quotes(payload: list[QuoteIn], db: AsyncSession, user: User |
                 ask=rounded_ask,
                 premium=premium,
                 quote_timestamp=quote_ts,
-                received_at=datetime.now(UTC),
+                received_at=received_at,
                 source=row.source,
-                client_id=client.id if client else None,
+                client_id=client_id,
                 data_status=row.data_status,
             )
-            db.add(item)
-            await db.flush()
-            await db.commit()
+
+
+
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_market_quotes_option_series",
+                set_={
+                    "last_price": rounded_last,
+                    "bid": rounded_bid,
+                    "ask": rounded_ask,
+                    "premium": premium,
+                    "quote_timestamp": quote_ts,
+                    "received_at": received_at,
+                    "source": row.source,
+                    "client_id": client_id,
+                    "data_status": row.data_status,
+                },
+                where=(
+                    (MarketQuote.last_price.is_distinct_from(rounded_last))
+                    | (MarketQuote.bid.is_distinct_from(rounded_bid))
+                    | (MarketQuote.ask.is_distinct_from(rounded_ask))
+                ),
+            )
+
+
+
+            result = await db.execute(stmt)
+
+
+
+            # rowcount == 0 significa que a cotação já existia
+            # e nenhum valor relevante mudou.
+            if result.rowcount == 0:
+                rejected.append(
+                    {
+                        "index": idx,
+                        "option_symbol": series.option_symbol,
+                        "reason": "Valor igual, não atualiza.",
+                    }
+                )
+                continue
+
+
+
             accepted += 1
+
+
 
             await manager.broadcast_market(
                 {
@@ -115,24 +318,53 @@ async def _process_quotes(payload: list[QuoteIn], db: AsyncSession, user: User |
                     "data": {
                         "asset": asset.symbol,
                         "option_symbol": series.option_symbol,
-                        "last_price": float(item.last_price) if item.last_price is not None else None,
-                        "bid": float(item.bid) if item.bid is not None else None,
-                        "ask": float(item.ask) if item.ask is not None else None,
-                        "quote_timestamp": item.quote_timestamp.isoformat(),
+                        "last_price": float(rounded_last) if rounded_last is not None else None,
+                        "bid": float(rounded_bid) if rounded_bid is not None else None,
+                        "ask": float(rounded_ask) if rounded_ask is not None else None,
+                        "quote_timestamp": quote_ts.isoformat(),
                     },
                 }
             )
+
+
+
         except HTTPException as exc:
             await db.rollback()
-            rejected.append({"index": idx, "reason": exc.detail})
+            rejected.append(
+                {
+                    "index": idx,
+                    "option_symbol": row.option_symbol,
+                    "reason": exc.detail,
+                }
+            )
+
+
+
         except IntegrityError:
             await db.rollback()
-            rejected.append({"index": idx, "reason": "Cotação duplicada rejeitada."})
+            rejected.append(
+                {
+                    "index": idx,
+                    "option_symbol": row.option_symbol,
+                    "reason": "Cotação duplicada rejeitada.",
+                }
+            )
+
+
+
+    await db.commit()
+
+
 
     return QuoteBatchResponse(accepted=accepted, rejected=rejected)
 
 
-@router.get("", summary="Consulta cotações por filtros")
+
+
+@router.get(
+    "",
+    summary="Consulta cotações por filtros",
+)
 async def get_quotes(
     asset: str | None = None,
     option_symbol: str | None = None,
@@ -141,52 +373,114 @@ async def get_quotes(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    stmt = select(MarketQuote, OptionSeries, Asset).join(OptionSeries, MarketQuote.option_series_id == OptionSeries.id).join(Asset, MarketQuote.asset_id == Asset.id)
+    stmt = (
+        select(MarketQuote, OptionSeries, Asset)
+        .join(
+            OptionSeries,
+            MarketQuote.option_series_id == OptionSeries.id,
+        )
+        .join(
+            Asset,
+            MarketQuote.asset_id == Asset.id,
+        )
+    )
+
+
+
     if asset:
         stmt = stmt.where(Asset.symbol == asset.upper())
+
+
+
     if option_symbol:
-        stmt = stmt.where(OptionSeries.option_symbol == option_symbol.upper())
+        stmt = stmt.where(
+            OptionSeries.option_symbol == option_symbol.upper()
+        )
+
+
+
     if from_ts:
         stmt = stmt.where(MarketQuote.quote_timestamp >= from_ts)
+
+
+
     if to_ts:
         stmt = stmt.where(MarketQuote.quote_timestamp <= to_ts)
+
+
+
     stmt = stmt.order_by(MarketQuote.quote_timestamp.desc()).limit(1000)
+
+
+
     rows = (await db.execute(stmt)).all()
+
+
+
     return [
         {
-            "asset": a.symbol,
-            "option_symbol": s.option_symbol,
-            "last_price": q.last_price,
-            "bid": q.bid,
-            "ask": q.ask,
-            "premium": q.premium,
-            "quote_timestamp": q.quote_timestamp,
-            "received_at": q.received_at,
-            "data_status": q.data_status,
-            "sequence": q.sequence,
+            "asset": asset_row.symbol,
+            "option_symbol": series_row.option_symbol,
+            "last_price": quote_row.last_price,
+            "bid": quote_row.bid,
+            "ask": quote_row.ask,
+            "premium": quote_row.premium,
+            "quote_timestamp": quote_row.quote_timestamp,
+            "received_at": quote_row.received_at,
+            "data_status": quote_row.data_status,
+            "sequence": quote_row.sequence,
         }
-        for q, s, a in rows
+        for quote_row, series_row, asset_row in rows
     ]
 
 
-@router.get("/latest", summary="Retorna última cotação")
+
+
+@router.get(
+    "/latest",
+    summary="Retorna última cotação",
+)
 async def latest(
     asset: str,
     option_symbol: str,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    asset_obj, series = await _resolve_asset_series(db, asset, option_symbol)
+    asset_obj, series = await _resolve_asset_series(
+        db,
+        asset,
+        option_symbol,
+    )
+
+
+
     last = (
         await db.execute(
             select(MarketQuote)
-            .where(MarketQuote.asset_id == asset_obj.id, MarketQuote.option_series_id == series.id)
-            .order_by(MarketQuote.quote_timestamp.desc(), MarketQuote.sequence.desc())
+            .where(
+                MarketQuote.asset_id == asset_obj.id,
+                MarketQuote.option_series_id == series.id,
+            )
+            .order_by(
+                MarketQuote.quote_timestamp.desc(),
+                MarketQuote.sequence.desc(),
+            )
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+
     if not last:
-        return {"asset": asset_obj.symbol, "option_symbol": series.option_symbol, "data_status": "NA", "message": "N/D"}
+        return {
+            "asset": asset_obj.symbol,
+            "option_symbol": series.option_symbol,
+            "data_status": "NA",
+            "message": "N/D",
+        }
+
+
+
     return {
         "asset": asset_obj.symbol,
         "option_symbol": series.option_symbol,
@@ -200,7 +494,12 @@ async def latest(
     }
 
 
-@router.get("/history", summary="Retorna histórico de cotações")
+
+
+@router.get(
+    "/history",
+    summary="Retorna histórico de cotações",
+)
 async def history(
     asset: str,
     option_symbol: str,
@@ -208,25 +507,41 @@ async def history(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    asset_obj, series = await _resolve_asset_series(db, asset, option_symbol)
+    asset_obj, series = await _resolve_asset_series(
+        db,
+        asset,
+        option_symbol,
+    )
+
+
+
     rows = (
         await db.execute(
             select(MarketQuote)
-            .where(MarketQuote.asset_id == asset_obj.id, MarketQuote.option_series_id == series.id)
-            .order_by(MarketQuote.quote_timestamp.desc(), MarketQuote.sequence.desc())
+            .where(
+                MarketQuote.asset_id == asset_obj.id,
+                MarketQuote.option_series_id == series.id,
+            )
+            .order_by(
+                MarketQuote.quote_timestamp.desc(),
+                MarketQuote.sequence.desc(),
+            )
             .limit(limit)
         )
     ).scalars().all()
+
+
+
     return [
         {
-            "last_price": x.last_price,
-            "bid": x.bid,
-            "ask": x.ask,
-            "premium": x.premium,
-            "quote_timestamp": x.quote_timestamp,
-            "received_at": x.received_at,
-            "data_status": x.data_status,
-            "sequence": x.sequence,
+            "last_price": quote.last_price,
+            "bid": quote.bid,
+            "ask": quote.ask,
+            "premium": quote.premium,
+            "quote_timestamp": quote.quote_timestamp,
+            "received_at": quote.received_at,
+            "data_status": quote.data_status,
+            "sequence": quote.sequence,
         }
-        for x in rows
+        for quote in rows
     ]

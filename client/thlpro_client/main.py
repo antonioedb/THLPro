@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+
 import argparse
 import os
 import platform
 import threading
 import time
+
 
 from thlpro_client.api_client import APIError, THLProAPIClient
 from thlpro_client.app_paths import CLIENT_MUTEX_NAME, ensure_app_dirs
@@ -20,6 +22,7 @@ from thlpro_client.sender_service import SenderService
 from thlpro_client.supervisor import WatchdogSupervisor, WorkerSpec
 from thlpro_client.tk_config_window import ConfigWindow
 from thlpro_client.tray_ui import TrayApp
+
 
 VERSION = "0.4.0"
 
@@ -71,24 +74,46 @@ def run_client(simulate_override: bool | None = None, no_gui: bool = False) -> i
         api.api_key = api_key
 
         cfg_payload = api.get_config()
-        logger.info("Configuração recebida: %s séries ativas", len(cfg_payload.get("active_series", [])))
+        logger.info(
+            "Configuração recebida: %s séries ativas",
+            len(cfg_payload.get("active_series", [])),
+        )
 
-        rtd_mode = "simulate" if config.simulate or os.getenv("SIMULATE", "0") == "1" else os.getenv("RTD_MODE", "com")
-        rtd = create_rtd_client(rtd_mode, logger)
+        rtd_mode = (
+            "simulate"
+            if config.simulate or os.getenv("SIMULATE", "0") == "1"
+            else os.getenv("RTD_MODE", "com")
+        )
+
+        rtd = create_rtd_client(
+            rtd_mode,
+            logger,
+            server_url=config.server_url,
+            api_key=api_key,
+        )
 
         queue = OfflineQueue(paths["queue"])
         dedup = QuoteDeduplicator(min_interval_ms=config.min_send_interval_ms)
-        capture = CaptureService(logger, rtd, dedup, queue.enqueue_many, simulation_mode=(rtd_mode == "simulate"))
-        total = capture.configure_series(cfg_payload)
-        capture.start_capture()
-        logger.info("Séries assinadas: %s", total)
 
-        sender = SenderService(logger, api, queue, heartbeat_seconds=config.heartbeat_seconds)
+        capture = CaptureService(
+            logger=logger,
+            rtd_client=rtd,
+            deduplicator=dedup,
+            queue_enqueue=queue.enqueue_many,
+            simulation_mode=(rtd_mode == "simulate"),
+        )
+
+        sender = SenderService(
+            logger=logger,
+            api_client=api,
+            queue=queue,
+            heartbeat_seconds=config.heartbeat_seconds,
+        )
 
         poller = ConfigPollerService(
             logger=logger,
             api_client=api,
-            on_config=lambda c: capture.configure_series(c),
+            on_config=lambda c: capture.set_pending_config(c),
             interval_seconds=config.poll_config_seconds,
         )
 
@@ -97,21 +122,36 @@ def run_client(simulate_override: bool | None = None, no_gui: bool = False) -> i
             WorkerSpec(name="sender_worker", target=sender.run_forever),
             WorkerSpec(name="config_poller_worker", target=poller.run_forever),
         ]
+
         supervisor = WatchdogSupervisor(logger, workers)
         supervisor.start_all()
-        wd = threading.Thread(target=supervisor.run_watchdog, name="watchdog", daemon=True)
-        wd.start()
+
+        watchdog_thread = threading.Thread(
+            target=supervisor.run_watchdog,
+            name="watchdog",
+            daemon=True,
+        )
+        watchdog_thread.start()
+
+        # Enfileira as séries para assinatura progressiva.
+        # O capture_worker assina os lotes no mesmo thread do Excel/RTD.
+        capture.set_pending_config(cfg_payload)
+
+        # Inicia a captura imediatamente.
+        capture.start_capture()
 
         def open_config_window():
             if no_gui:
                 logger.info("UI desabilitada (modo no-gui).")
                 return
+
             cfg_window = ConfigWindow(config, on_save=on_save)
             cfg_window.run()
 
         def toggle_capture():
             nonlocal capture_started
             capture_started = not capture_started
+
             if capture_started:
                 capture.start_capture()
                 logger.info("Captura iniciada pela bandeja")
@@ -129,21 +169,43 @@ def run_client(simulate_override: bool | None = None, no_gui: bool = False) -> i
             logger.info("Encerrando serviços do cliente")
 
         if not no_gui:
-            tray = TrayApp(logger, on_open=open_config_window, on_toggle_capture=toggle_capture, on_exit=stop_everything)
-            tray_thread = threading.Thread(target=tray.run, name="tray", daemon=True)
+            tray = TrayApp(
+                logger=logger,
+                on_open=open_config_window,
+                on_toggle_capture=toggle_capture,
+                on_exit=stop_everything,
+            )
+
+            tray_thread = threading.Thread(
+                target=tray.run,
+                name="tray",
+                daemon=True,
+            )
             tray_thread.start()
 
-        logger.info("Cliente THLPro iniciado. Modo simulação: %s", rtd_mode == "simulate")
+        logger.info(
+            "Cliente THLPro iniciado. Modo simulação: %s",
+            rtd_mode == "simulate",
+        )
 
         oneshot_raw = os.getenv("THLPRO_ONESHOT_SECONDS")
-        oneshot_seconds = int(oneshot_raw) if oneshot_raw and oneshot_raw.isdigit() else 0
+        oneshot_seconds = (
+            int(oneshot_raw)
+            if oneshot_raw and oneshot_raw.isdigit()
+            else 0
+        )
+
         elapsed = 0
 
         while running:
             time.sleep(1)
             elapsed += 1
+
             if oneshot_seconds and elapsed >= oneshot_seconds:
-                logger.info("Modo oneshot atingido (%ss). Encerrando.", oneshot_seconds)
+                logger.info(
+                    "Modo oneshot atingido (%ss). Encerrando.",
+                    oneshot_seconds,
+                )
                 stop_everything()
                 break
 
@@ -152,23 +214,36 @@ def run_client(simulate_override: bool | None = None, no_gui: bool = False) -> i
     except (APIError, RuntimeError) as exc:
         logger.error("Falha de inicialização: %s", exc)
         return 1
+
     except KeyboardInterrupt:
         logger.info("Encerrando cliente por teclado")
         return 0
+
     finally:
         release_single_instance_lock(lock_obj)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="THLPro Client")
-    parser.add_argument("--simulate", action="store_true", help="Força modo simulação")
-    parser.add_argument("--no-gui", action="store_true", help="Executa sem abrir janela")
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Força modo simulação",
+    )
+    parser.add_argument(
+        "--no-gui",
+        action="store_true",
+        help="Executa sem abrir janela",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    return run_client(simulate_override=True if args.simulate else None, no_gui=args.no_gui)
+    return run_client(
+        simulate_override=True if args.simulate else None,
+        no_gui=args.no_gui,
+    )
 
 
 if __name__ == "__main__":
