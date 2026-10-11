@@ -1,50 +1,77 @@
-# ===== Arquivos de sistema =====
+# ==========================================
+# Sistema operacional
+# ==========================================
 .DS_Store
 Thumbs.db
 desktop.ini
+*.lnk
 
-# ===== Variáveis e segredos =====
+# ==========================================
+# Variáveis de ambiente e segredos
+# ==========================================
 .env
 .env.*
 !.env.example
-*.env
+*.pem
+*.key
+*.crt
 
-# ===== Python: backend e client =====
+# ==========================================
+# Python: backend e client
+# ==========================================
+
+# Cache e arquivos compilados
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 
 # Ambientes virtuais
 .venv/
 venv/
-env/
 ENV/
 
-# Instalações e builds Python
+# Empacotamento e builds Python
 build/
+develop-eggs/
 dist/
-*.egg-info/
+downloads/
+eggs/
 .eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
 *.egg
+MANIFEST
 
 # Testes e cobertura
 .pytest_cache/
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
 .tox/
 .nox/
+.hypothesis/
 
-# Ferramentas Python
+# Type checking, lint e notebooks
 .mypy_cache/
 .ruff_cache/
+.pytype/
 .ipynb_checkpoints/
 
-# Logs
-*.log
-logs/
+# Django / FastAPI locais
+media/
+staticfiles/
+celerybeat-schedule
+celerybeat.pid
 
-# ===== Node.js: frontend =====
+# ==========================================
+# Node.js / frontend
+# ==========================================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -52,29 +79,73 @@ yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
 
-# Builds do frontend
-dist/
-build/
+# Builds e caches de frontend
 .vite/
 .next/
+nuxt.d.ts
+.nuxt/
 out/
 coverage/
-
-# Cache e temporários
 .cache/
 .parcel-cache/
+.turbo/
+
+# Ferramentas Node
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+.npm
+.yarn/cache
+.yarn/install-state.gz
+
+# ==========================================
+# Logs e arquivos temporários
+# ==========================================
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
 tmp/
 temp/
-
-# ===== Excel e arquivos grandes/temporários =====
-~$*.xlsx
-~$*.xls
-~$*.docx
 *.tmp
 *.bak
 *.swp
+*.swo
+*~
 
-# ===== Banco de dados local =====
+# ==========================================
+# Excel, Word e arquivos temporários
+# ==========================================
+~$*.xlsx
+~$*.xls
+~$*.xlsm
+~$*.docx
+~$*.doc
+
+# ==========================================
+# Bancos de dados locais
+# ==========================================
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# ==========================================
+# IDEs e editores
+# ==========================================
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ==========================================
+# Docker local
+# ==========================================
+.docker/
+docker-compose.override.yml

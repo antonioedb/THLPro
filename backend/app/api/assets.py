@@ -6,13 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, require_admin
+from app.core.deps import get_current_user, get_user_or_client, require_admin
 from app.database import get_db
-from app.models import Asset, AssetQuote, OptionSeries, User
+from app.models import Asset, AssetQuote, Client, OptionSeries, User
 from app.schemas.assets import AssetCreate, AssetOut, AssetUpdate, StrikeListResponse
 from app.schemas.auth import MessageResponse
 from app.schemas.quotes import AssetQuoteIn
 from app.services.strike_rules import get_strikes_in_range
+
 
 router = APIRouter(prefix="/assets", tags=["Ativos"])
 
@@ -78,15 +79,21 @@ async def delete_asset(ref: str, _: User = Depends(require_admin), db: AsyncSess
 
 
 @router.post("/quotes", summary="Recebe cotações do ativo-base")
-async def post_asset_quotes(payload: list[AssetQuoteIn], _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
+async def post_asset_quotes(
+    payload: list[AssetQuoteIn],
+    _: User | Client = Depends(get_user_or_client),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     accepted = 0
     rejected = []
+
     for idx, row in enumerate(payload):
         symbol = row.asset.upper()
         asset = (await db.execute(select(Asset).where(Asset.symbol == symbol))).scalar_one_or_none()
         if not asset:
             rejected.append({"index": idx, "reason": "Ativo não cadastrado."})
             continue
+
         item = AssetQuote(
             asset_id=asset.id,
             last_price=Decimal(row.last_price),
@@ -101,6 +108,7 @@ async def post_asset_quotes(payload: list[AssetQuoteIn], _: User = Depends(get_c
         )
         db.add(item)
         accepted += 1
+
     await db.commit()
     return {"accepted": accepted, "rejected": rejected}
 
@@ -150,6 +158,7 @@ async def get_strikes(symbol: str, _: User = Depends(get_current_user), db: Asyn
         ).scalar_one_or_none()
         if not has_series:
             warning = "Nenhuma série ativa sincronizada para este ativo."
+
     return StrikeListResponse(
         asset=asset.symbol,
         spot_price=spot,
