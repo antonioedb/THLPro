@@ -91,6 +91,7 @@ export function PremiumChart({
     side === 'CALL' ? 'call_symbol' : 'put_symbol'
 
   const color = side === 'CALL' ? '#0ea5e9' : '#f97316'
+  const selectedColor = '#8b5cf6'
 
   const renderDot = (props: any) => {
     const { cx, cy, payload } = props
@@ -127,8 +128,8 @@ export function PremiumChart({
           cx={cx}
           cy={cy}
           r={7}
-          fill="rgba(34, 197, 94, 0.25)"
-          stroke="#22c55e"
+          fill="rgba(139, 92, 246, 0.25)"
+          stroke={selectedColor}
           strokeWidth={2}
         />
 
@@ -136,7 +137,7 @@ export function PremiumChart({
           cx={cx}
           cy={cy}
           r={3}
-          fill="#22c55e"
+          fill={selectedColor}
         />
       </g>
     )

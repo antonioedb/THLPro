@@ -16,9 +16,7 @@ import { Badge } from '../components/ui/Badge'
 import { PremiumChart } from '../components/charts/PremiumChart'
 import { MarketWsClient } from '../lib/ws'
 
-
 type Side = 'CALL' | 'PUT'
-
 
 interface OptionRow {
   expiration_date: string
@@ -29,24 +27,19 @@ interface OptionRow {
   quote?: QuoteLatestResponse
 }
 
-
 function hasPositiveQuoteValue(value?: string | null): boolean {
   if (value === undefined || value === null || value === '') {
     return false
   }
 
-
   const numeric = Number(value)
-
 
   return Number.isFinite(numeric) && numeric > 0
 }
 
-
 function formatBookValue(value?: string | null): string {
   return hasPositiveQuoteValue(value) ? fmtNumber(value) : 'N/D'
 }
-
 
 function formatStrike(
   strike: string | null | undefined,
@@ -56,45 +49,35 @@ function formatStrike(
     return '—'
   }
 
-
   const numeric = Number(strike)
-
 
   if (!Number.isFinite(numeric)) {
     return strike
   }
 
-
   if (assetSymbol.toUpperCase().startsWith('BOVA')) {
     return numeric.toFixed(0)
   }
 
-
   return numeric.toFixed(2)
 }
-
 
 export default function MainPage() {
   const { user, token } = useAuth()
   const { prefs, setPrefs } = usePreferences()
   const queryClient = useQueryClient()
 
-
   const [wsStatus, setWsStatus] = useState<
     'connecting' | 'connected' | 'disconnected'
   >('disconnected')
-
 
   const [wsQuoteMap, setWsQuoteMap] = useState<
     Record<string, QuoteLatestResponse>
   >({})
 
-
   const [showSettings, setShowSettings] = useState(false)
 
-
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>([])
-
 
   const assetsQuery = useQuery({
     queryKey: ['assets'],
@@ -106,22 +89,18 @@ export default function MainPage() {
       ).data,
   })
 
-
   useEffect(() => {
     if (!assetsQuery.data?.length) {
       return
     }
 
-
     const selectedAssetExists = assetsQuery.data.some(
       (asset) => asset.symbol === prefs.selected_asset,
     )
 
-
     if (selectedAssetExists) {
       return
     }
-
 
     setPrefs((old) => ({
       ...old,
@@ -135,7 +114,6 @@ export default function MainPage() {
     setPrefs,
   ])
 
-
   const strikesQuery = useQuery({
     queryKey: ['strikes', prefs.selected_asset],
     enabled: !!prefs.selected_asset,
@@ -147,34 +125,27 @@ export default function MainPage() {
       ).data,
   })
 
-
   const sortedStrikes = useMemo(() => {
     const strikes = strikesQuery.data?.strikes ?? []
-
 
     return [...strikes].sort((a, b) => Number(a) - Number(b))
   }, [strikesQuery.data?.strikes])
 
-
   useEffect(() => {
     const strikes = strikesQuery.data?.strikes ?? []
-
 
     if (!strikes.length) {
       return
     }
 
-
     if (strikes.includes(prefs.selected_strike)) {
       return
     }
-
 
     const fallbackStrike =
       strikesQuery.data?.recommended_strike
       ?? strikes[0]
       ?? defaultPreferences.selected_strike
-
 
     setPrefs((old) => ({
       ...old,
@@ -185,7 +156,6 @@ export default function MainPage() {
     prefs.selected_strike,
     setPrefs,
   ])
-
 
   const spotQuery = useQuery({
     queryKey: ['spot', prefs.selected_asset],
@@ -198,13 +168,11 @@ export default function MainPage() {
       ).data,
   })
 
-
   const optionTypeParam = (
     `${prefs.show_calls ? 'CALL,' : ''}${
       prefs.show_puts ? 'PUT' : ''
     }`
   ).replace(/,$/, '') || 'CALL,PUT'
-
 
   const byStrikeQuery = useQuery({
     queryKey: [
@@ -228,14 +196,12 @@ export default function MainPage() {
       ).data,
   })
 
-
   const settingsQuery = useQuery({
     queryKey: ['admin-settings', user?.role],
     enabled: user?.role === 'admin',
     queryFn: async () =>
       (await api.get<SystemSetting[]>('/admin/settings')).data,
   })
-
 
   const quoteSymbols = useMemo(
     () =>
@@ -244,7 +210,6 @@ export default function MainPage() {
         .filter((symbol): symbol is string => !!symbol),
     [byStrikeQuery.data],
   )
-
 
   const quotesQuery = useQuery({
     queryKey: [
@@ -266,39 +231,32 @@ export default function MainPage() {
             },
           )
 
-
           return [symbol, data] as const
         }),
       )
 
-
       return Object.fromEntries(rows)
     },
   })
-
 
   useEffect(() => {
     if (!prefs.auto_refresh) {
       return
     }
 
-
     const timer = window.setInterval(() => {
       queryClient.invalidateQueries({
         queryKey: ['spot', prefs.selected_asset],
       })
 
-
       queryClient.invalidateQueries({
         queryKey: ['latest-quotes', prefs.selected_asset],
       })
-
 
       queryClient.invalidateQueries({
         queryKey: ['strikes', prefs.selected_asset],
       })
     }, prefs.refresh_interval * 1000)
-
 
     return () => window.clearInterval(timer)
   }, [
@@ -308,12 +266,10 @@ export default function MainPage() {
     queryClient,
   ])
 
-
   useEffect(() => {
     if (!token) {
       return
     }
-
 
     const ws = new MarketWsClient({
       token,
@@ -322,12 +278,10 @@ export default function MainPage() {
         if (event.type === 'snapshot' && Array.isArray(event.data)) {
           const map: Record<string, QuoteLatestResponse> = {}
 
-
           event.data.forEach((item: any) => {
             if (!item.option_symbol) {
               return
             }
-
 
             map[item.option_symbol] = {
               asset: item.asset,
@@ -340,13 +294,11 @@ export default function MainPage() {
             }
           })
 
-
           setWsQuoteMap((old) => ({
             ...old,
             ...map,
           }))
         }
-
 
         if (
           event.type === 'quote'
@@ -355,11 +307,9 @@ export default function MainPage() {
         ) {
           const data: any = event.data
 
-
           if (!data.option_symbol) {
             return
           }
-
 
           setWsQuoteMap((old) => ({
             ...old,
@@ -377,13 +327,10 @@ export default function MainPage() {
       },
     })
 
-
     ws.connect()
-
 
     return () => ws.stop()
   }, [token])
-
 
   const quoteMap = useMemo(
     () => ({
@@ -392,7 +339,6 @@ export default function MainPage() {
     }),
     [quotesQuery.data, wsQuoteMap],
   )
-
 
   const rows = useMemo<OptionRow[]>(() => {
     return (byStrikeQuery.data?.items ?? []).map((item) => ({
@@ -407,73 +353,58 @@ export default function MainPage() {
     }))
   }, [byStrikeQuery.data, quoteMap])
 
-
   const callRows = rows.filter((row) => row.side === 'CALL')
   const putRows = rows.filter((row) => row.side === 'PUT')
-
 
   const simulationMode = useMemo(() => {
     const setting = settingsQuery.data?.find(
       (item) => item.key === 'simulation_mode',
     )
 
-
     return Boolean(setting?.value?.value)
   }, [settingsQuery.data])
-
 
   const chartData = useMemo(() => {
     const byExpiration: Record<string, any> = {}
 
-
     const assetRoot = prefs.selected_asset.replace(/[0-9]+$/, '')
-
 
     const getShortSymbol = (symbol?: string | null) => {
       if (!symbol) {
         return null
       }
 
-
       if (symbol.startsWith(assetRoot)) {
         return symbol.slice(assetRoot.length)
       }
 
-
       return symbol
     }
 
-
     rows.forEach((row) => {
       const key = fmtDateMonth(row.expiration_date)
-
 
       byExpiration[key] ??= {
         vencimento: key,
       }
 
-
       const premium = row.quote?.premium ?? row.quote?.last_price
-
 
       if (row.side === 'CALL') {
         byExpiration[key].call = hasPositiveQuoteValue(premium)
           ? Number(premium)
           : null
 
-
         byExpiration[key].call_symbol = row.option_symbol
         byExpiration[key].call_symbol_short = getShortSymbol(
           row.option_symbol,
         )
-
 
         byExpiration[key].call_bid = hasPositiveQuoteValue(
           row.quote?.bid,
         )
           ? Number(row.quote?.bid)
           : null
-
 
         byExpiration[key].call_ask = hasPositiveQuoteValue(
           row.quote?.ask,
@@ -485,19 +416,16 @@ export default function MainPage() {
           ? Number(premium)
           : null
 
-
         byExpiration[key].put_symbol = row.option_symbol
         byExpiration[key].put_symbol_short = getShortSymbol(
           row.option_symbol,
         )
-
 
         byExpiration[key].put_bid = hasPositiveQuoteValue(
           row.quote?.bid,
         )
           ? Number(row.quote?.bid)
           : null
-
 
         byExpiration[key].put_ask = hasPositiveQuoteValue(
           row.quote?.ask,
@@ -507,10 +435,8 @@ export default function MainPage() {
       }
     })
 
-
     return Object.values(byExpiration)
   }, [rows, prefs.selected_asset])
-
 
   const toggleSymbol = (symbol: string) => {
     setSelectedSymbols((old) => {
@@ -518,11 +444,9 @@ export default function MainPage() {
         return old.filter((item) => item !== symbol)
       }
 
-
       return [...old, symbol]
     })
   }
-
 
   const statusColor =
     wsStatus === 'connected'
@@ -530,7 +454,6 @@ export default function MainPage() {
       : wsStatus === 'connecting'
         ? 'yellow'
         : 'red'
-
 
   return (
     <div className="space-y-4">
@@ -540,11 +463,9 @@ export default function MainPage() {
             Servidor {spotQuery.isError ? 'offline' : 'online'}
           </Badge>
 
-
           <Badge color={statusColor}>
             WS {wsStatus}
           </Badge>
-
 
           <Badge
             color={spotQuery.data?.spot_price ? 'green' : 'yellow'}
@@ -554,20 +475,17 @@ export default function MainPage() {
               : 'Aguardando dados do Profit…'}
           </Badge>
 
-
           {simulationMode && (
             <Badge color="blue">
               Dados simulados de teste
             </Badge>
           )}
 
-
           <span>
             Última atualização global:{' '}
             {fmtTime(spotQuery.data?.quote_timestamp)}
           </span>
         </div>
-
 
         <div className="flex flex-wrap gap-2">
           <button
@@ -576,7 +494,6 @@ export default function MainPage() {
           >
             Atualizar
           </button>
-
 
           <button
             className="btn-secondary"
@@ -587,12 +504,10 @@ export default function MainPage() {
         </div>
       </section>
 
-
       {showSettings && (
         <section className="panel grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
           <label className="field">
             <span>Tema</span>
-
 
             <select
               className="input"
@@ -609,10 +524,8 @@ export default function MainPage() {
             </select>
           </label>
 
-
           <label className="field">
             <span>Vencimentos</span>
-
 
             <input
               className="input"
@@ -629,7 +542,6 @@ export default function MainPage() {
             />
           </label>
 
-
           <label className="field">
             <span>Tolerância atual</span>
             <input
@@ -639,10 +551,8 @@ export default function MainPage() {
             />
           </label>
 
-
           <label className="field">
             <span>Atualização automática</span>
-
 
             <select
               className="input"
@@ -661,11 +571,9 @@ export default function MainPage() {
         </section>
       )}
 
-
       <section className="panel grid grid-cols-1 gap-3 lg:grid-cols-6">
         <label className="field lg:col-span-1">
           <span>Ativo</span>
-
 
           <select
             className="input"
@@ -685,10 +593,8 @@ export default function MainPage() {
           </select>
         </label>
 
-
         <label className="field lg:col-span-2">
           <span>Strike</span>
-
 
           <select
             className="input"
@@ -708,10 +614,8 @@ export default function MainPage() {
           </select>
         </label>
 
-
         <label className="field lg:col-span-1">
           <span>Qtd. vencimentos</span>
-
 
           <input
             className="input"
@@ -728,10 +632,8 @@ export default function MainPage() {
           />
         </label>
 
-
         <label className="field lg:col-span-1">
           <span>Lados</span>
-
 
           <select
             className="input"
@@ -740,7 +642,6 @@ export default function MainPage() {
             }`}
             onChange={(event) => {
               const value = event.target.value
-
 
               setPrefs((old) => ({
                 ...old,
@@ -755,10 +656,8 @@ export default function MainPage() {
           </select>
         </label>
 
-
         <label className="field lg:col-span-1">
           <span>Intervalo refresh (s)</span>
-
 
           <input
             className="input"
@@ -776,25 +675,21 @@ export default function MainPage() {
         </label>
       </section>
 
-
       <section className="panel grid grid-cols-1 gap-2 text-sm md:grid-cols-2 lg:grid-cols-4">
         <div>
           <h4 className="font-semibold">Ativo</h4>
           <p>{prefs.selected_asset}</p>
         </div>
 
-
         <div>
           <h4 className="font-semibold">Último preço</h4>
           <p>{fmtNumber(spotQuery.data?.spot_price)}</p>
         </div>
 
-
         <div>
           <h4 className="font-semibold">Horário da atualização</h4>
           <p>{fmtTime(spotQuery.data?.quote_timestamp)}</p>
         </div>
-
 
         <div>
           <h4 className="font-semibold">Faixa de strikes</h4>
@@ -805,14 +700,12 @@ export default function MainPage() {
           </p>
         </div>
 
-
         {strikesQuery.data?.warning && (
-          <p className="text-amber-500 md:col-span-2 lg:col-span-4">
-            {strikesQuery.data.warning}
+          <p className="text-violet-500 md:col-span-2 lg:col-span-4">
+            Strikes aproximados
           </p>
         )}
       </section>
-
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {prefs.show_calls && (
@@ -826,7 +719,6 @@ export default function MainPage() {
           />
         )}
 
-
         {prefs.show_puts && (
           <OptionTable
             title="PUT"
@@ -839,7 +731,6 @@ export default function MainPage() {
         )}
       </section>
 
-
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {prefs.show_calls && (
           <PremiumChart
@@ -848,7 +739,6 @@ export default function MainPage() {
             selectedSymbols={selectedSymbols}
           />
         )}
-
 
         {prefs.show_puts && (
           <PremiumChart
@@ -861,9 +751,6 @@ export default function MainPage() {
     </div>
   )
 }
-
-
-
 
 function OptionTable({
   title,
@@ -892,7 +779,6 @@ function OptionTable({
         {title}
       </h3>
 
-
       <table className="table text-sm">
         <thead>
           <tr>
@@ -907,7 +793,6 @@ function OptionTable({
           </tr>
         </thead>
 
-
         <tbody>
           {rows.map((row, index) => {
             const noData = (
@@ -915,24 +800,20 @@ function OptionTable({
               || row.quote?.message === 'N/D'
             )
 
-
             const usedStrike = (
               row.matched_strike
               ?? row.requested_strike
             )
-
 
             const adjustedStrike = (
               !!row.matched_strike
               && row.matched_strike !== requestedStrike
             )
 
-
             const isSelected = (
               !!row.option_symbol
               && selectedSymbols.includes(row.option_symbol)
             )
-
 
             return (
               <tr
@@ -961,14 +842,11 @@ function OptionTable({
                   )}
                 </td>
 
-
                 <td>{fmtDateMonth(row.expiration_date)}</td>
-
 
                 <td>
                   {row.option_symbol ?? '— sem opção —'}
                 </td>
-
 
                 <td
                   title={
@@ -997,10 +875,9 @@ function OptionTable({
                 >
                   {formatStrike(usedStrike, assetSymbol)}
                   {adjustedStrike && (
-                    <span className="text-amber-500"> ★</span>
+                    <span className="text-violet-500"> ★</span>
                   )}
                 </td>
-
 
                 <td>
                   {noData
@@ -1008,20 +885,17 @@ function OptionTable({
                     : formatBookValue(row.quote?.bid)}
                 </td>
 
-
                 <td>
                   {noData
                     ? 'N/D'
                     : formatBookValue(row.quote?.ask)}
                 </td>
 
-
                 <td>
                   {noData
                     ? 'N/D'
                     : formatBookValue(row.quote?.last_price)}
                 </td>
-
 
                 <td>{fmtTime(row.quote?.quote_timestamp)}</td>
               </tr>
