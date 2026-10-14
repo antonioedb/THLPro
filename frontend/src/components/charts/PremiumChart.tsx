@@ -8,7 +8,6 @@ import {
   YAxis,
 } from 'recharts'
 
-
 interface Item {
   vencimento: string
   call?: number | null
@@ -23,18 +22,15 @@ interface Item {
   put_symbol_short?: string | null
 }
 
-
 interface PremiumChartProps {
   data: Item[]
   side: 'CALL' | 'PUT'
   selectedSymbols?: string[]
 }
 
-
 interface TooltipPayloadItem {
   payload: Item
 }
-
 
 function CustomTooltip({
   active,
@@ -49,7 +45,6 @@ function CustomTooltip({
     return null
   }
 
-
   const item = payload[0].payload
 
   const premium = side === 'CALL' ? item.call : item.put
@@ -58,12 +53,10 @@ function CustomTooltip({
   const symbol =
     side === 'CALL' ? item.call_symbol_short : item.put_symbol_short
 
-
   const formatValue = (value?: number | null) =>
     typeof value === 'number' && Number.isFinite(value)
       ? value.toFixed(2).replace('.', ',')
       : 'N/D'
-
 
   return (
     <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-slate-700 dark:bg-slate-900">
@@ -71,16 +64,13 @@ function CustomTooltip({
         {side} {symbol ? `— ${symbol}` : ''}
       </div>
 
-
       <div className="text-green-600 dark:text-green-400">
         ASK: {formatValue(ask)}
       </div>
 
-
       <div className="font-semibold">
         Prêmio: {formatValue(premium)}
       </div>
-
 
       <div className="text-red-600 dark:text-red-400">
         BID: {formatValue(bid)}
@@ -88,7 +78,6 @@ function CustomTooltip({
     </div>
   )
 }
-
 
 export function PremiumChart({
   data,
@@ -103,13 +92,22 @@ export function PremiumChart({
 
   const color = side === 'CALL' ? '#0ea5e9' : '#f97316'
 
-
   const renderDot = (props: any) => {
     const { cx, cy, payload } = props
 
+    const value = payload?.[dataKey]
+
+    if (
+      value === null ||
+      value === undefined ||
+      cx === undefined ||
+      cy === undefined
+    ) {
+      return null
+    }
+
     const symbol = payload?.[fullSymbolKey]
     const isSelected = !!symbol && selectedSymbols.includes(symbol)
-
 
     if (!isSelected) {
       return (
@@ -123,7 +121,6 @@ export function PremiumChart({
       )
     }
 
-
     return (
       <g>
         <circle
@@ -135,7 +132,6 @@ export function PremiumChart({
           strokeWidth={2}
         />
 
-
         <circle
           cx={cx}
           cy={cy}
@@ -146,15 +142,18 @@ export function PremiumChart({
     )
   }
 
-
   return (
-    <div className="panel h-80">
+    <div className="panel h-96 overflow-hidden">
       <h3 className="mb-3 text-sm font-semibold">
         Prêmio por vencimento — {side}
       </h3>
 
-
-      <ResponsiveContainer>
+      <ResponsiveContainer
+        width="100%"
+        height="100%"
+        className="focus:outline-none"
+        tabIndex={-1}
+      >
         <LineChart
           data={data}
           margin={{
@@ -174,16 +173,13 @@ export function PremiumChart({
             tickMargin={10}
           />
 
-
           <YAxis stroke="#94a3b8" width={50} />
-
 
           <Tooltip
             content={
               <CustomTooltip side={side} />
             }
           />
-
 
           <Line
             type="monotone"
@@ -192,7 +188,8 @@ export function PremiumChart({
             name={side}
             strokeWidth={2}
             dot={renderDot}
-            activeDot={{ r: 5 }}
+            activeDot={false}
+            connectNulls={false}
           >
             <LabelList
               dataKey={symbolKey}
