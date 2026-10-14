@@ -34,12 +34,45 @@ export interface Asset {
   source: string
 }
 
+export interface StrikeCoverage {
+  strike: string
+
+  // Quantidade total de vencimentos mensais usados na curva.
+  monthly_expirations: number
+
+  // Em quantos vencimentos há uma CALL ativa para esse strike.
+  call_expirations: number
+
+  // Em quantos vencimentos há uma PUT ativa para esse strike.
+  put_expirations: number
+
+  // Em quantos vencimentos há CALL e PUT simultaneamente.
+  complete_pairs: number
+
+  // Datas mensais nas quais existe ao menos uma série ativa para o strike.
+  monthly_dates: string[]
+}
+
 export interface StrikeListResponse {
   asset: string
   spot_price: string | null
   range_low: string | null
   range_high: string | null
+
+  // Mantido para compatibilidade. O backend agora ordena os strikes pela
+  // melhor cobertura de CALL + PUT nos vencimentos mensais.
   strikes: string[]
+
+  // Cobertura detalhada de cada strike na curva mensal.
+  strike_coverage: StrikeCoverage[]
+
+  // Datas mensais usadas para calcular a cobertura.
+  monthly_expirations: string[]
+
+  // Strike mais próximo do spot com CALL + PUT em todos os vencimentos
+  // mensais; quando não houver cobertura completa, é o de maior cobertura.
+  recommended_strike: string | null
+
   data_avail: boolean
   warning?: string | null
 }

@@ -7,12 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Asset, OptionSeries, OptionType
 
 
-async def get_strikes_in_range(db: AsyncSession, asset: Asset, spot_price: Decimal | None) -> tuple[Decimal | None, Decimal | None, list[Decimal]]:
+async def get_strikes_in_range(
+    db: AsyncSession,
+    asset: Asset,
+    spot_price: Decimal | None,
+) -> tuple[Decimal | None, Decimal | None, list[Decimal]]:
     if spot_price is None:
         return None, None, []
 
     low = spot_price * (Decimal("1") - asset.lower_range_percent / Decimal("100"))
     high = spot_price * (Decimal("1") + asset.upper_range_percent / Decimal("100"))
+
     stmt: Select = (
         select(OptionSeries.strike)
         .where(
@@ -26,8 +31,10 @@ async def get_strikes_in_range(db: AsyncSession, asset: Asset, spot_price: Decim
         .distinct()
         .order_by(OptionSeries.strike.asc())
     )
+
     values = (await db.execute(stmt)).scalars().all()
-    return low, high, [Decimal(v) for v in values]
+
+    return low, high, [Decimal(value) for value in values]
 
 
 async def resolve_series_by_strike(
@@ -55,6 +62,8 @@ async def resolve_series_by_strike(
 
     best = min(rows, key=lambda s: abs(Decimal(s.strike) - requested_strike))
     diff = abs(Decimal(best.strike) - requested_strike)
+
     if diff <= tolerance:
         return best, (diff if diff != 0 else None)
+
     return None, None
