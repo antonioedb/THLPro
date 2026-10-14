@@ -27,6 +27,9 @@ from thlpro_client.tray_ui import TrayApp
 
 VERSION = "0.4.0"
 
+# Limite total de espera pelos serviços durante o encerramento.
+SHUTDOWN_TIMEOUT_SECONDS = 45.0
+
 VALID_RTD_MODES = {
     "excel_bridge",
     "excel",
@@ -44,15 +47,12 @@ def resolve_rtd_mode(
     cli_rtd_mode: str | None,
 ) -> str:
     """
-    Define o modo RTD por ordem de prioridade:
+    Mantém a regra de seleção existente:
 
-    1. --simulate
-    2. --rtd-mode
-    3. variável RTD_MODE
-    4. modo legado compatível: excel_bridge
-
-    excel_bridge ainda usa Excel oculto e pode conflitar com planilhas
-    manuais que usam RTD na mesma máquina.
+    1. Simulação solicitada por CLI, configuração ou variável SIMULATE.
+    2. --rtd-mode.
+    3. Variável RTD_MODE.
+    4. excel_bridge.
     """
     if simulate_override is True:
         return "simulate"
@@ -68,7 +68,6 @@ def resolve_rtd_mode(
 
     if selected not in VALID_RTD_MODES:
         valid = ", ".join(sorted(VALID_RTD_MODES))
-
         raise RuntimeError(
             f"RTD_MODE inválido: {selected!r}. Modos aceitos: {valid}."
         )
@@ -76,32 +75,28 @@ def resolve_rtd_mode(
     return selected
 
 
-def log_rtd_mode_warning(
-    logger,
-    rtd_mode: str,
-) -> None:
+def log_rtd_mode_warning(logger, rtd_mode: str) -> None:
     if rtd_mode in {"excel_bridge", "excel", "com"}:
         logger.warning(
-            "Modo RTD=%s: o cliente abrirá um Excel oculto para ler o "
-            "RTD do Profit. Não use planilhas Excel com fórmulas RTD "
-            "simultaneamente nesta máquina, pois o servidor RTD pode "
-            "conflitar entre instâncias do Excel.",
+            "Modo RTD=%s: usa Excel oculto para ler o RTD do Profit. "
+            "Durante o teste do cliente, mantenha fechadas as planilhas "
+            "manuais que também usam RTD.",
             rtd_mode,
         )
         return
 
     if rtd_mode in {"com_probe", "probe"}:
         logger.warning(
-            "Modo RTD=%s: diagnóstico COM sem Excel. Este modo não "
-            "captura nem envia cotações.",
+            "Modo RTD=%s: diagnóstico COM sem Excel. "
+            "Este modo não captura nem envia cotações.",
             rtd_mode,
         )
         return
 
     if rtd_mode == "profit_api":
         logger.info(
-            "Modo RTD=profit_api: integração sem Excel oculto. "
-            "Requer implementação e credenciais compatíveis da API/plugin."
+            "Modo RTD=profit_api: integração ainda depende "
+            "da implementação da API/plugin."
         )
         return
 
@@ -117,33 +112,142 @@ def run_client(
     rtd_mode_override: str | None = None,
 ) -> int:
     paths = ensure_app_dirs()
-    logger = configure_logging(
-        str(paths["logs"] / "thlpro_client.log")
-    )
+    log_path = paths["logs"] / "thlpro_client.log"
+    logger = configure_logging(str(log_path))
 
     lock_obj, already_running = create_single_instance_lock(
         CLIENT_MUTEX_NAME
     )
 
     if already_running:
-        logger.error("Já existe uma instância do THLPro Client em execução.")
+        logger.error(
+            "Já existe uma instância do THLPro Client em execução."
+        )
         return 2
 
-    store = ConfigStore(paths["config"])
-    config = store.load()
+    shutdown_requested = threading.Event()
+    shutdown_lock = threading.Lock()
+    shutdown_signalled = False
+
+    capture = None
+    sender = None
+    poller = None
+    supervisor = None
+    watchdog_thread = None
+
+    worker_done: dict[str, threading.Event] = {}
+    worker_started: dict[str, threading.Event] = {}
 
     runtime_password = ""
-    running = True
-    capture_started = True
 
-    def on_save(updated, password):
-        nonlocal config, runtime_password
+    # Estado do botão da bandeja, não da conexão RTD.
+    capture_paused_by_tray = False
 
-        config = updated
-        runtime_password = password
-        store.save(config)
+    def request_shutdown() -> None:
+        """
+        Apenas sinaliza os serviços.
+
+        Não acessa o Excel e não aguarda workers no callback da bandeja.
+        """
+        nonlocal shutdown_signalled
+
+        shutdown_requested.set()
+
+        with shutdown_lock:
+            if shutdown_signalled:
+                return
+
+            shutdown_signalled = True
+            logger.info("Encerramento solicitado; sinalizando serviços.")
+
+            # Primeiro impede novas reinicializações pelo watchdog.
+            if supervisor is not None:
+                try:
+                    supervisor.stop()
+                except Exception:
+                    logger.exception("Falha ao sinalizar supervisor.")
+
+            for name, service in (
+                ("config_poller", poller),
+                ("capture", capture),
+                ("sender", sender),
+            ):
+                if service is None:
+                    continue
+
+                try:
+                    service.stop()
+                except Exception:
+                    logger.exception(
+                        "Falha ao sinalizar serviço %s.",
+                        name,
+                    )
+
+    def make_worker_target(name: str, target):
+        """
+        Envolve o worker para registrar sua conclusão.
+
+        Evita depender dos atributos internos do WatchdogSupervisor.
+        """
+        done = threading.Event()
+        started = threading.Event()
+
+        worker_done[name] = done
+        worker_started[name] = started
+
+        def wrapped() -> None:
+            done.clear()
+            started.set()
+
+            try:
+                if shutdown_requested.is_set():
+                    return
+
+                target()
+            finally:
+                done.set()
+                logger.info("Worker finalizado: %s", name)
+
+        return wrapped
+
+    def wait_for_shutdown() -> None:
+        deadline = (
+            time.monotonic() + SHUTDOWN_TIMEOUT_SECONDS
+        )
+
+        for name, done in worker_done.items():
+            if not worker_started[name].is_set():
+                continue
+
+            remaining = max(0.0, deadline - time.monotonic())
+
+            if not done.wait(remaining):
+                logger.warning(
+                    "Tempo de espera esgotado para %s. "
+                    "Não será feito fechamento RTD por outra thread.",
+                    name,
+                )
+
+        if watchdog_thread is not None:
+            remaining = max(0.0, deadline - time.monotonic())
+            watchdog_thread.join(timeout=remaining)
+
+            if watchdog_thread.is_alive():
+                logger.warning(
+                    "Watchdog ainda ativo após o limite de espera."
+                )
 
     try:
+        store = ConfigStore(paths["config"])
+        config = store.load()
+
+        def on_save(updated, password):
+            nonlocal config, runtime_password
+
+            config = updated
+            runtime_password = password
+            store.save(config)
+
         if (not config.email or not config.server_url) and not no_gui:
             config_window = ConfigWindow(config, on_save=on_save)
             config_window.run()
@@ -183,13 +287,17 @@ def run_client(
 
         api.api_key = api_key
 
+        # Apenas consulta os ativos disponíveis.
+        # Não aplica essa configuração à captura.
         initial_config = api.get_config(include_series=False)
 
         logger.info(
-            "Configuração inicial recebida: %s ativos-base e %s séries.",
+            "Cliente iniciado em modo sob demanda. "
+            "Ativos-base disponíveis: %s.",
             len(initial_config.get("assets", [])),
-            len(initial_config.get("active_series", [])),
         )
+        logger.info("Arquivo de log: %s", log_path)
+        logger.info("Banco da fila offline: %s", paths["queue"])
 
         rtd_mode = resolve_rtd_mode(
             config_simulate=config.simulate,
@@ -199,6 +307,7 @@ def run_client(
 
         log_rtd_mode_warning(logger, rtd_mode)
 
+        # Cria o objeto, mas não chama connect() na thread principal.
         rtd = create_rtd_client(
             rtd_mode,
             logger,
@@ -232,22 +341,31 @@ def run_client(
             logger=logger,
             api_client=api,
             capture_service=capture,
-            on_config=lambda payload: capture.set_pending_config(payload),
+            on_config=capture.set_pending_config,
             interval_seconds=config.poll_config_seconds,
         )
 
         workers = [
             WorkerSpec(
                 name="capture_worker",
-                target=capture.run_forever,
+                target=make_worker_target(
+                    "capture_worker",
+                    capture.run_forever,
+                ),
             ),
             WorkerSpec(
                 name="sender_worker",
-                target=sender.run_forever,
+                target=make_worker_target(
+                    "sender_worker",
+                    sender.run_forever,
+                ),
             ),
             WorkerSpec(
                 name="config_poller_worker",
-                target=poller.run_forever,
+                target=make_worker_target(
+                    "config_poller_worker",
+                    poller.run_forever,
+                ),
             ),
         ]
 
@@ -261,10 +379,14 @@ def run_client(
         )
         watchdog_thread.start()
 
-        capture.set_pending_config(initial_config)
-        capture.start_capture()
+        # Não chama set_pending_config(initial_config).
+        # Não chama start_capture() na inicialização.
+        # O poller enfileira a demanda e libera a captura.
 
         def open_config_window():
+            if shutdown_requested.is_set():
+                return
+
             if no_gui:
                 logger.info("UI desabilitada (modo no-gui).")
                 return
@@ -273,42 +395,29 @@ def run_client(
             config_window.run()
 
         def toggle_capture():
-            nonlocal capture_started
+            nonlocal capture_paused_by_tray
 
-            capture_started = not capture_started
+            if shutdown_requested.is_set():
+                return
 
-            if capture_started:
-                capture.start_capture()
-                logger.info("Captura iniciada pela bandeja")
-            else:
+            capture_paused_by_tray = not capture_paused_by_tray
+
+            if capture_paused_by_tray:
                 capture.stop_capture()
-                logger.info("Captura pausada pela bandeja")
-
-        def stop_everything():
-            nonlocal running
-
-            running = False
-            capture.stop()
-            sender.stop()
-            poller.stop()
-            supervisor.stop()
-
-            try:
-                rtd.close()
-            except Exception as exc:
-                logger.warning(
-                    "Falha ao encerrar cliente RTD: %s",
-                    exc,
+                logger.info("Pausa solicitada pela bandeja.")
+            else:
+                capture.start_capture()
+                logger.info(
+                    "Retomada solicitada pela bandeja. "
+                    "Sem configuração, a captura permanece aguardando."
                 )
-
-            logger.info("Encerrando serviços do cliente")
 
         if not no_gui:
             tray = TrayApp(
                 logger=logger,
                 on_open=open_config_window,
                 on_toggle_capture=toggle_capture,
-                on_exit=stop_everything,
+                on_exit=request_shutdown,
             )
 
             tray_thread = threading.Thread(
@@ -319,44 +428,54 @@ def run_client(
             tray_thread.start()
 
         logger.info(
-            "Cliente THLPro iniciado. rtd_mode=%s; simulação=%s",
+            "Cliente THLPro iniciado. rtd_mode=%s; simulação=%s; "
+            "captura=somente sob demanda; consulta_demanda=%ss.",
             rtd_mode,
             rtd_mode == "simulate",
+            config.poll_config_seconds,
         )
 
-        oneshot_raw = os.getenv("THLPRO_ONESHOT_SECONDS")
+        oneshot_raw = os.getenv("THLPRO_ONESHOT_SECONDS", "")
         oneshot_seconds = (
             int(oneshot_raw)
-            if oneshot_raw and oneshot_raw.isdigit()
+            if oneshot_raw.isdigit()
             else 0
         )
 
-        elapsed = 0
+        started_at = time.monotonic()
 
-        while running:
-            time.sleep(1)
-            elapsed += 1
-
-            if oneshot_seconds and elapsed >= oneshot_seconds:
+        while not shutdown_requested.wait(0.5):
+            if (
+                oneshot_seconds
+                and time.monotonic() - started_at >= oneshot_seconds
+            ):
                 logger.info(
                     "Modo oneshot atingido (%ss). Encerrando.",
                     oneshot_seconds,
                 )
-                stop_everything()
-                break
+                request_shutdown()
 
         return 0
 
     except (APIError, RuntimeError) as exc:
-        logger.error("Falha de inicialização: %s", exc)
+        logger.error("Falha de inicialização/execução: %s", exc)
         return 1
 
     except KeyboardInterrupt:
-        logger.info("Encerrando cliente por teclado")
+        logger.info("Encerrando cliente por teclado.")
         return 0
 
+    except Exception:
+        logger.exception("Falha inesperada no cliente.")
+        return 1
+
     finally:
-        release_single_instance_lock(lock_obj)
+        try:
+            request_shutdown()
+            wait_for_shutdown()
+            logger.info("Rotina de encerramento concluída.")
+        finally:
+            release_single_instance_lock(lock_obj)
 
 
 def parse_args():
@@ -380,8 +499,10 @@ def parse_args():
         default=None,
         help=(
             "Modo de captura RTD. "
-            "excel_bridge abre Excel oculto; com_probe apenas diagnostica; "
-            "profit_api depende de integração oficial; simulate gera testes."
+            "excel_bridge usa Excel oculto; "
+            "com_probe apenas diagnostica; "
+            "profit_api depende de implementação; "
+            "simulate gera testes."
         ),
     )
 

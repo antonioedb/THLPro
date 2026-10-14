@@ -29,6 +29,7 @@ from app.schemas.clients import (
     ClientStatusItem,
 )
 from app.schemas.quotes import QuoteBatchResponse, QuoteIn
+from app.services.capture_demand import capture_demand_store
 from app.services.websocket_manager import manager
 
 
@@ -40,17 +41,11 @@ router = APIRouter(prefix="/clients", tags=["Clientes"])
 
 LEASE_TTL_SECONDS = 600
 
-# Faixa de strikes enviada ao cliente RTD:
-# 15% abaixo e 15% acima do último preço do ativo-base.
+# Configuração legada de captura ampla.
+# O cliente sob demanda não consulta séries por este endpoint.
 OPTION_STRIKE_RANGE_PCT = Decimal("0.15")
-
-# Inclui o mês atual e os seis meses seguintes.
-# Ex.: em outubro, traz opções até abril do ano seguinte.
 OPTION_MONTHS_AHEAD = 6
 
-# Regra compartilhada com GET /options/by-strike:
-# para cada mês, a data com a maior quantidade de séries ativas é a
-# data mensal escolhida para a interface e para a captura RTD.
 MONTHLY_EXPIRATION_RULE = "MOST_ACTIVE_DATE_PER_MONTH"
 
 
@@ -60,10 +55,7 @@ class LeaseBatchRequest(BaseModel):
 
 def add_months(reference: date, months: int) -> date:
     """
-    Soma meses a uma data e limita o dia ao último dia válido do mês.
-
-    Exemplo:
-    31/01 + 1 mês = 28/02 ou 29/02.
+    Soma meses a uma data e limita o dia ao último dia válido.
     """
     target_month = reference.month - 1 + months
     target_year = reference.year + target_month // 12
@@ -74,7 +66,10 @@ def add_months(reference: date, months: int) -> date:
         if target_month == 12
         else date(target_year, target_month + 1, 1)
     )
-    last_day_target_month = first_day_next_month - timedelta(days=1)
+
+    last_day_target_month = (
+        first_day_next_month - timedelta(days=1)
+    )
 
     return date(
         target_year,
@@ -87,13 +82,9 @@ def parse_spot_values(
     spot_values: list[str] | None,
 ) -> dict[str, Decimal]:
     """
-    Converte parâmetros repetidos:
+    Converte parâmetros como:
 
-        ?spot=BOVA11:205.55&spot=ABEV3:15.99
-
-    em:
-
-        {"BOVA11": Decimal("205.55"), "ABEV3": Decimal("15.99")}
+    ?spot=BOVA11:205.55&spot=ABEV3:15.99
     """
     parsed: dict[str, Decimal] = {}
 
@@ -113,7 +104,7 @@ def parse_spot_values(
         except InvalidOperation:
             continue
 
-        if price <= 0:
+        if not price.is_finite() or price <= 0:
             continue
 
         parsed[symbol] = price
@@ -130,11 +121,8 @@ async def get_monthly_expiration_dates(
     """
     Retorna uma data de vencimento por mês.
 
-    A data mensal é aquela que possui a maior quantidade de séries ativas
-    no cadastro para o ativo e mês correspondente. Em empate, mantém a
-    data mais próxima, pois a consulta é ordenada por data crescente.
-
-    Esta é a mesma regra usada pelo endpoint /options/by-strike.
+    Escolhe a data com mais séries ativas.
+    Em empate, mantém a primeira data da consulta ordenada.
     """
     rows = (
         await db.execute(
@@ -153,7 +141,10 @@ async def get_monthly_expiration_dates(
         )
     ).all()
 
-    monthly_by_month: dict[tuple[int, int], tuple[date, int]] = {}
+    monthly_by_month: dict[
+        tuple[int, int],
+        tuple[date, int],
+    ] = {}
 
     for expiration_date, series_count in rows:
         month_key = (
@@ -217,7 +208,10 @@ async def register_client(
     return ClientRegisterResponse(
         client_id=client.id,
         api_key=raw_key,
-        message="Guarde esta chave com segurança; ela não será exibida novamente.",
+        message=(
+            "Guarde esta chave com segurança; "
+            "ela não será exibida novamente."
+        ),
     )
 
 
@@ -240,6 +234,38 @@ async def heartbeat(
     )
 
 
+@router.get(
+    "/capture-config",
+    summary="Retorna a última solicitação de captura sob demanda",
+)
+async def get_capture_config(
+    client: Client = Depends(get_client_from_api_key),
+) -> dict | None:
+    """
+    Repassa a configuração de captura solicitada pelo frontend.
+    """
+    payload = capture_demand_store.get()
+
+    if not payload:
+        logger.info(
+            "Capture config: nenhuma solicitação pendente "
+            "para cliente=%s.",
+            client.id,
+        )
+        return None
+
+    logger.info(
+        "Capture config enviada para cliente=%s: "
+        "ativo=%s strike=%s séries=%s.",
+        client.id,
+        payload.get("asset"),
+        payload.get("strike"),
+        len(payload.get("active_series", [])),
+    )
+
+    return payload
+
+
 @router.post(
     "/lease/acquire",
     summary="Cliente pede lease temporário para atualizar uma opção",
@@ -255,7 +281,11 @@ async def acquire_lease(
     result = await db.execute(
         text(
             """
-            INSERT INTO leases (option_series_id, client_id, expires_at)
+            INSERT INTO leases (
+                option_series_id,
+                client_id,
+                expires_at
+            )
             VALUES (:oid, :cid, :exp)
             ON CONFLICT (option_series_id)
             DO UPDATE SET
@@ -321,7 +351,11 @@ async def acquire_lease_batch(
     result = await db.execute(
         text(
             """
-            INSERT INTO leases (option_series_id, client_id, expires_at)
+            INSERT INTO leases (
+                option_series_id,
+                client_id,
+                expires_at
+            )
             SELECT oid, :cid, :exp
             FROM unnest(CAST(:oids AS int[])) AS oid
             ON CONFLICT (option_series_id)
@@ -346,10 +380,11 @@ async def acquire_lease_batch(
 
     await db.commit()
 
+    acquired_set = set(acquired)
     rejected = [
         option_series_id
         for option_series_id in option_series_ids
-        if option_series_id not in acquired
+        if option_series_id not in acquired_set
     ]
 
     return {
@@ -387,6 +422,100 @@ async def release_lease(
     return {
         "released": True,
         "message": "Lease liberado com sucesso.",
+    }
+
+
+@router.post(
+    "/lease/release-batch",
+    summary="Cliente libera os leases de várias opções em uma operação",
+)
+async def release_lease_batch(
+    payload: LeaseBatchRequest,
+    client: Client = Depends(get_client_from_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Libera somente leases pertencentes ao cliente autenticado.
+
+    IDs repetidos são removidos.
+    IDs menores ou iguais a zero são ignorados.
+
+    IDs sem lease deste cliente aparecem em not_released.
+    Isso também cobre leases que já foram removidos anteriormente.
+    """
+    started_at = time.perf_counter()
+
+    option_series_ids = list(
+        dict.fromkeys(
+            option_series_id
+            for option_series_id in payload.option_series_ids
+            if option_series_id > 0
+        )
+    )
+
+    if not option_series_ids:
+        return {
+            "released": [],
+            "not_released": [],
+            "requested_count": 0,
+            "released_count": 0,
+            "message": "Nenhum ID válido informado para liberação.",
+        }
+
+    result = await db.execute(
+        text(
+            """
+            DELETE FROM leases
+            WHERE client_id = :cid
+              AND option_series_id = ANY(CAST(:oids AS int[]))
+            RETURNING option_series_id
+            """
+        ),
+        {
+            "cid": client.id,
+            "oids": option_series_ids,
+        },
+    )
+
+    released = sorted(
+        int(row[0])
+        for row in result.fetchall()
+    )
+
+    await db.commit()
+
+    released_set = set(released)
+
+    not_released = [
+        option_series_id
+        for option_series_id in option_series_ids
+        if option_series_id not in released_set
+    ]
+
+    elapsed_ms = (
+        time.perf_counter() - started_at
+    ) * 1000
+
+    logger.info(
+        "Liberação de leases em lote: cliente=%s "
+        "solicitados=%s liberados=%s não_liberados=%s "
+        "tempo=%.1fms.",
+        client.id,
+        len(option_series_ids),
+        len(released),
+        len(not_released),
+        elapsed_ms,
+    )
+
+    return {
+        "released": released,
+        "not_released": not_released,
+        "requested_count": len(option_series_ids),
+        "released_count": len(released),
+        "message": (
+            "Liberação em lote concluída para os leases "
+            "pertencentes ao cliente autenticado."
+        ),
     }
 
 
@@ -465,7 +594,7 @@ async def client_quotes(
                 raise HTTPException(
                     status_code=403,
                     detail=(
-                        f"Sem lease ativo para a opção "
+                        "Sem lease ativo para a opção "
                         f"{series.option_symbol}."
                     ),
                 )
@@ -502,14 +631,17 @@ async def client_config(
     db: AsyncSession = Depends(get_db),
 ) -> ClientConfigResponse:
     """
-    Entrega ativos habilitados e séries mensais adequadas à captura RTD.
+    Endpoint legado de configuração filtrada.
 
     Critérios:
     - ativo habilitado;
     - série ativa;
-    - uma data mensal por mês, definida pela maior quantidade de séries;
+    - uma data por mês, definida pela quantidade de séries;
     - vencimentos entre hoje e os seis meses seguintes;
-    - strike entre −15% e +15% do spot recebido pelo cliente.
+    - strike entre -15% e +15% do spot.
+
+    O cliente em modo exclusivamente sob demanda usa capture-config
+    para receber as séries selecionadas pelo frontend.
     """
     request_started_at = time.perf_counter()
 
@@ -544,7 +676,9 @@ async def client_config(
         )
 
     if not assets:
-        logger.warning("Config RTD: nenhum ativo habilitado encontrado.")
+        logger.warning(
+            "Config RTD: nenhum ativo habilitado encontrado."
+        )
 
         return ClientConfigResponse(
             assets=assets_payload,
@@ -566,7 +700,10 @@ async def client_config(
         )
 
     today = datetime.now(UTC).date()
-    max_expiration_date = add_months(today, OPTION_MONTHS_AHEAD)
+    max_expiration_date = add_months(
+        today,
+        OPTION_MONTHS_AHEAD,
+    )
 
     selected_series: list[OptionSeries] = []
 
@@ -614,7 +751,9 @@ async def client_config(
                 .where(
                     OptionSeries.asset_id == asset.id,
                     OptionSeries.active.is_(True),
-                    OptionSeries.expiration_date.in_(monthly_expirations),
+                    OptionSeries.expiration_date.in_(
+                        monthly_expirations
+                    ),
                     OptionSeries.strike >= min_strike,
                     OptionSeries.strike <= max_strike,
                 )
@@ -642,7 +781,8 @@ async def client_config(
         )
 
         counts_text = ",".join(
-            f"{expiration.isoformat()}:{by_expiration.get(expiration, 0)}"
+            f"{expiration.isoformat()}:"
+            f"{by_expiration.get(expiration, 0)}"
             for expiration in monthly_expirations
         )
 
@@ -676,7 +816,9 @@ async def client_config(
         for series in selected_series
     ]
 
-    elapsed_ms = (time.perf_counter() - request_started_at) * 1000
+    elapsed_ms = (
+        time.perf_counter() - request_started_at
+    ) * 1000
 
     logger.info(
         "Config RTD finalizada: regra_mensal=%s ativos=%s spots=%s "
@@ -704,7 +846,9 @@ async def status_clients(
     db: AsyncSession = Depends(get_db),
 ) -> list[ClientStatusItem]:
     rows = (
-        await db.execute(select(Client).order_by(Client.id))
+        await db.execute(
+            select(Client).order_by(Client.id)
+        )
     ).scalars().all()
 
     return [

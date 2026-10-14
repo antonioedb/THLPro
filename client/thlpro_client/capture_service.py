@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+from copy import deepcopy
 from threading import Event, Lock
 from typing import Any
 
@@ -16,39 +17,11 @@ OPTION_FIELDS = ["ULT", "OCP", "OVD"]
 ASSET_FIELDS = ["ULT"]
 
 
-def is_valid_number(value: Any) -> bool:
-    if isinstance(value, bool):
-        return False
-
-    if isinstance(value, (int, float)):
-        if isinstance(value, float) and not math.isfinite(value):
-            return False
-
-        return value > EXCEL_ERROR_LIMIT
-
-    if isinstance(value, str):
-        if value.startswith("#"):
-            return False
-
-        try:
-            number = to_float(value)
-        except (TypeError, ValueError):
-            return False
-
-        return (
-            number is not None
-            and math.isfinite(number)
-            and number > EXCEL_ERROR_LIMIT
-        )
-
-    return False
-
-
 def to_float(value: Any) -> float | None:
     """
-    Converte números recebidos pelo Excel/RTD para float.
+    Converte valores RTD numéricos ou strings para float.
 
-    Trata formatos brasileiros e internacionais sem corromper a parte decimal:
+    Aceita:
     - 200.15
     - 200,15
     - 1.234,56
@@ -58,7 +31,11 @@ def to_float(value: Any) -> float | None:
         return None
 
     if isinstance(value, (int, float)):
-        number = float(value)
+        try:
+            number = float(value)
+        except (OverflowError, ValueError):
+            return None
+
         return number if math.isfinite(number) else None
 
     if not isinstance(value, str):
@@ -75,26 +52,24 @@ def to_float(value: Any) -> float | None:
     dot_count = normalized.count(".")
 
     if comma_count and dot_count:
-        last_comma = normalized.rfind(",")
-        last_dot = normalized.rfind(".")
-
-        if last_comma > last_dot:
-            # Exemplo: 1.234,56
+        if normalized.rfind(",") > normalized.rfind("."):
             normalized = normalized.replace(".", "").replace(",", ".")
         else:
-            # Exemplo: 1,234.56
             normalized = normalized.replace(",", "")
-
     elif comma_count:
-        # Exemplo: 200,15
         normalized = normalized.replace(",", ".")
 
     try:
         number = float(normalized)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
     return number if math.isfinite(number) else None
+
+
+def is_valid_number(value: Any) -> bool:
+    number = to_float(value)
+    return number is not None and number > EXCEL_ERROR_LIMIT
 
 
 def infer_asset(
@@ -102,7 +77,7 @@ def infer_asset(
     option_symbol: str,
 ) -> str:
     symbols = [
-        str(asset.get("symbol", "")).upper()
+        str(asset.get("symbol") or "").strip().upper()
         for asset in assets
         if asset.get("symbol")
     ]
@@ -121,7 +96,7 @@ def infer_asset(
         reverse=True,
     )
 
-    option_upper = option_symbol.upper()
+    option_upper = option_symbol.strip().upper()
 
     for symbol, root in roots:
         if root and option_upper.startswith(root):
@@ -152,355 +127,456 @@ class CaptureService:
         self._pause.set()
 
         self._lock = Lock()
+        self._connected = False
 
-        # Últimos valores válidos dos campos das opções.
+        # Recebida pelo poller e aplicada somente pelo capture_worker.
+        self._pending_replacement: dict[str, Any] | None = None
+        self._config_generation = 0
+
         self._last_values: dict[str, dict[str, Any]] = {}
-
-        # Último ULT válido de cada ativo-base. O ConfigPollerService usa
-        # estes spots para solicitar ao backend somente strikes relevantes.
         self._asset_spots: dict[str, float] = {}
-
-        # Último spot já registrado no log por ativo.
         self._logged_asset_spots: dict[str, float] = {}
 
-        # Metadados somente das opções efetivamente assinadas.
         self._meta_by_rtd: dict[str, dict[str, Any]] = {}
 
-        # Itens aguardando assinatura no Excel/RTD.
         self._pending_series: list[dict[str, Any]] = []
         self._pending_assets: list[str] = []
 
-        # Evitam duplicação enquanto os itens aguardam assinatura.
         self._pending_series_symbols: set[str] = set()
         self._pending_asset_symbols: set[str] = set()
 
-        # Somente símbolos confirmados pelo subscribe_batch.
         self._configured_symbols: set[str] = set()
         self._asset_symbols: set[str] = set()
 
     def get_asset_spots(self) -> dict[str, float]:
-        """
-        Retorna uma cópia segura do último ULT de cada ativo-base.
-
-        Exemplo:
-        {
-            "BOVA11": 205.55,
-            "ABEV3": 15.99,
-        }
-        """
         with self._lock:
             return dict(self._asset_spots)
 
+    def replace_config(self, config_payload: dict[str, Any]) -> None:
+        """
+        Enfileira uma substituição completa de configuração.
+
+        Não chama o RTD nem manipula o Excel na thread do poller.
+        Se várias solicitações chegarem antes da aplicação, mantém a última.
+        """
+        payload = deepcopy(config_payload)
+
+        with self._lock:
+            self._config_generation += 1
+            self._pending_replacement = payload
+
+        self.logger.info(
+            "Demanda enfileirada: ativo=%s strike=%s séries=%s. "
+            "Será aplicada pelo capture_worker.",
+            payload.get("asset"),
+            payload.get("strike"),
+            len(payload.get("active_series") or []),
+        )
+
     def set_pending_config(self, config_payload: dict[str, Any]) -> None:
         """
-        Recebe a configuração do backend sem duplicar símbolos já
-        configurados ou aguardando assinatura.
+        Compatibilidade com o callback usado no main.py.
+
+        No modo sob demanda, configurações substituem a captura anterior,
+        em vez de acumular séries de diferentes seleções.
         """
-        assets = config_payload.get("assets", [])
-        active_series = config_payload.get("active_series", [])
+        self.replace_config(config_payload)
+
+    def _normalize_config(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        assets = payload.get("assets") or []
+        active_series = payload.get("active_series") or []
 
         new_series: list[dict[str, Any]] = []
         new_assets: list[str] = []
+        seen_series: set[str] = set()
+        seen_assets: set[str] = set()
+
+        demand_asset = str(payload.get("asset") or "").strip().upper()
+
+        for row in active_series:
+            option_symbol = str(
+                row.get("option_symbol") or ""
+            ).strip().upper()
+
+            if not option_symbol or option_symbol in seen_series:
+                continue
+
+            seen_series.add(option_symbol)
+
+            new_series.append(
+                {
+                    "id": row.get("id"),
+                    "option_symbol": option_symbol,
+                    "option_type": row.get("option_type"),
+                    "strike": str(row.get("strike")),
+                    "expiration_date": row.get("expiration_date"),
+                    "asset": demand_asset or infer_asset(
+                        assets,
+                        option_symbol,
+                    ),
+                }
+            )
+
+        for asset in assets:
+            symbol = str(asset.get("symbol") or "").strip().upper()
+
+            if not symbol or symbol in seen_assets:
+                continue
+
+            seen_assets.add(symbol)
+            new_assets.append(symbol)
+
+        return new_series, new_assets
+
+    def _apply_pending_replacement(self) -> bool:
+        """
+        Aplica a configuração exclusivamente na thread de captura.
+
+        Em caso de falha no reset, mantém a solicitação para nova tentativa.
+        """
+        with self._lock:
+            payload = self._pending_replacement
+            generation = self._config_generation
+
+        if payload is None:
+            return False
+
+        new_series, new_assets = self._normalize_config(payload)
 
         with self._lock:
-            for row in active_series:
-                option_symbol = str(row.get("option_symbol", "")).upper()
+            previous_series_count = len(self._configured_symbols)
+            previous_asset_count = len(self._asset_symbols)
 
-                if not option_symbol:
-                    continue
+        try:
+            # Antes da primeira conexão não há assinaturas a reiniciar.
+            if self._connected:
+                self.rtd_client.reset_subscriptions()
+        except Exception:
+            self.logger.exception(
+                "Falha ao reiniciar RTD. Demanda permanece pendente."
+            )
+            raise
 
-                if option_symbol in self._configured_symbols:
-                    continue
+        self._connected = False
 
-                if option_symbol in self._pending_series_symbols:
-                    continue
+        self.deduplicator.reset_symbols(
+            [row["option_symbol"] for row in new_series] + new_assets
+        )
 
-                new_series.append(
-                    {
-                        "id": row.get("id"),
-                        "option_symbol": option_symbol,
-                        "option_type": row.get("option_type"),
-                        "strike": str(row.get("strike")),
-                        "expiration_date": row.get("expiration_date"),
-                        "asset": infer_asset(assets, option_symbol),
-                    }
-                )
-                self._pending_series_symbols.add(option_symbol)
+        with self._lock:
+            self._last_values.clear()
+            self._asset_spots.clear()
+            self._logged_asset_spots.clear()
 
-            for asset in assets:
-                symbol = str(asset.get("symbol", "")).upper()
+            self._configured_symbols.clear()
+            self._meta_by_rtd.clear()
+            self._asset_symbols.clear()
 
-                if not symbol:
-                    continue
+            self._pending_series = new_series
+            self._pending_assets = new_assets
 
-                if symbol in self._asset_symbols:
-                    continue
+            self._pending_series_symbols = {
+                row["option_symbol"] for row in new_series
+            }
+            self._pending_asset_symbols = set(new_assets)
 
-                if symbol in self._pending_asset_symbols:
-                    continue
-
-                new_assets.append(symbol)
-                self._pending_asset_symbols.add(symbol)
-
-            self._pending_series.extend(new_series)
-            self._pending_assets.extend(new_assets)
-
-            pending_series_count = len(self._pending_series)
-            pending_asset_count = len(self._pending_assets)
+            # Não remove uma demanda mais nova recebida durante o reset.
+            if generation == self._config_generation:
+                self._pending_replacement = None
 
         self.logger.info(
-            "Configuração recebida: %s novas séries e %s novos ativos-base. "
-            "Fila atual: %s séries e %s ativos-base.",
+            "Demanda aplicada pelo capture_worker: ativo=%s strike=%s; "
+            "séries=%s ativos-base=%s; substituídas=%s séries "
+            "e %s ativos-base.",
+            payload.get("asset"),
+            payload.get("strike"),
             len(new_series),
             len(new_assets),
-            pending_series_count,
-            pending_asset_count,
+            previous_series_count,
+            previous_asset_count,
         )
+
+        return True
 
     def _configure_series_batch(self, batch_size: int = 100) -> int:
         with self._lock:
             batch = self._pending_series[:batch_size]
-            self._pending_series = self._pending_series[batch_size:]
-
-            for row in batch:
-                self._pending_series_symbols.discard(row["option_symbol"])
 
         if not batch:
             return 0
 
         symbols = [row["option_symbol"] for row in batch]
 
-        for row in batch:
-            option_series_id = row.get("id")
-
-            if option_series_id is not None:
-                self.rtd_client.register_meta(
-                    option_series_id,
-                    row["option_symbol"],
-                )
-
         try:
-            subscribed_symbols = set(
-                self.rtd_client.subscribe_batch(
-                    symbols,
-                    OPTION_FIELDS,
-                )
-            )
-        except Exception as exc:
-            self.logger.exception(
-                "Falha ao assinar lote de %s opções no RTD: %s",
-                len(batch),
-                exc,
-            )
-            subscribed_symbols = set()
+            for row in batch:
+                option_series_id = row.get("id")
 
-        configured_count = 0
-        retry_rows: list[dict[str, Any]] = []
+                if option_series_id is not None:
+                    self.rtd_client.register_meta(
+                        option_series_id,
+                        row["option_symbol"],
+                    )
+
+            subscribed_symbols = set(
+                self.rtd_client.subscribe_batch(symbols, OPTION_FIELDS)
+            )
+        except Exception:
+            self.logger.exception(
+                "Falha ao assinar lote de %s opções. "
+                "Itens permanecem pendentes.",
+                len(batch),
+            )
+            return 0
+
+        confirmed_symbols = set(symbols) & subscribed_symbols
 
         with self._lock:
             for row in batch:
-                option_symbol = row["option_symbol"]
+                symbol = row["option_symbol"]
 
-                if option_symbol not in subscribed_symbols:
-                    retry_rows.append(row)
+                if symbol not in confirmed_symbols:
                     continue
 
-                self._configured_symbols.add(option_symbol)
-                self._meta_by_rtd[option_symbol] = {
-                    "id": row.get("id"),
-                    "asset": row["asset"],
-                    "option_symbol": option_symbol,
-                    "option_type": row.get("option_type"),
-                    "strike": row.get("strike"),
-                    "expiration_date": row.get("expiration_date"),
-                }
-                configured_count += 1
+                self._configured_symbols.add(symbol)
+                self._meta_by_rtd[symbol] = dict(row)
+                self._pending_series_symbols.discard(symbol)
 
-            for row in retry_rows:
-                option_symbol = row["option_symbol"]
-
-                if option_symbol in self._configured_symbols:
-                    continue
-
-                if option_symbol in self._pending_series_symbols:
-                    continue
-
-                self._pending_series.append(row)
-                self._pending_series_symbols.add(option_symbol)
-
+            self._pending_series = [
+                row
+                for row in self._pending_series
+                if row["option_symbol"] not in confirmed_symbols
+            ]
             pending_count = len(self._pending_series)
 
-        if retry_rows:
-            failed_symbols = ", ".join(
-                row["option_symbol"] for row in retry_rows[:10]
-            )
-            suffix = "..." if len(retry_rows) > 10 else ""
+        failed_symbols = [
+            symbol for symbol in symbols
+            if symbol not in confirmed_symbols
+        ]
 
+        if failed_symbols:
             self.logger.warning(
-                "RTD não confirmou %s opções; elas voltarão à fila. "
-                "Exemplos: %s%s",
-                len(retry_rows),
-                failed_symbols,
-                suffix,
+                "Opções ainda pendentes de assinatura: %s",
+                ", ".join(failed_symbols[:10]),
             )
 
         self.logger.info(
             "Assinatura RTD de opções: solicitadas=%s confirmadas=%s "
             "pendentes=%s",
             len(batch),
-            configured_count,
+            len(confirmed_symbols),
             pending_count,
         )
 
-        return configured_count
+        return len(confirmed_symbols)
 
     def _configure_asset_batch(self, batch_size: int = 50) -> int:
         with self._lock:
             batch = self._pending_assets[:batch_size]
-            self._pending_assets = self._pending_assets[batch_size:]
-
-            for symbol in batch:
-                self._pending_asset_symbols.discard(symbol)
 
         if not batch:
             return 0
 
-        for symbol in batch:
-            self.rtd_client.register_asset(symbol)
-
         try:
-            subscribed_symbols = set(
-                self.rtd_client.subscribe_batch(
-                    batch,
-                    ASSET_FIELDS,
-                )
-            )
-        except Exception as exc:
-            self.logger.exception(
-                "Falha ao assinar lote de %s ativos-base no RTD: %s",
-                len(batch),
-                exc,
-            )
-            subscribed_symbols = set()
+            for symbol in batch:
+                self.rtd_client.register_asset(symbol)
 
-        configured_count = 0
-        retry_symbols: list[str] = []
+            subscribed_symbols = set(
+                self.rtd_client.subscribe_batch(batch, ASSET_FIELDS)
+            )
+        except Exception:
+            self.logger.exception(
+                "Falha ao assinar lote de %s ativos-base. "
+                "Itens permanecem pendentes.",
+                len(batch),
+            )
+            return 0
+
+        confirmed_symbols = set(batch) & subscribed_symbols
 
         with self._lock:
-            for symbol in batch:
-                if symbol not in subscribed_symbols:
-                    retry_symbols.append(symbol)
-                    continue
-
-                self._asset_symbols.add(symbol)
-                configured_count += 1
-
-            for symbol in retry_symbols:
-                if symbol in self._asset_symbols:
-                    continue
-
-                if symbol in self._pending_asset_symbols:
-                    continue
-
-                self._pending_assets.append(symbol)
-                self._pending_asset_symbols.add(symbol)
-
+            self._asset_symbols.update(confirmed_symbols)
+            self._pending_asset_symbols.difference_update(
+                confirmed_symbols
+            )
+            self._pending_assets = [
+                symbol
+                for symbol in self._pending_assets
+                if symbol not in confirmed_symbols
+            ]
             pending_count = len(self._pending_assets)
 
-        if retry_symbols:
+        failed_symbols = [
+            symbol for symbol in batch
+            if symbol not in confirmed_symbols
+        ]
+
+        if failed_symbols:
             self.logger.warning(
-                "RTD não confirmou %s ativos-base; eles voltarão à fila: %s",
-                len(retry_symbols),
-                ", ".join(retry_symbols),
+                "Ativos-base ainda pendentes de assinatura: %s",
+                ", ".join(failed_symbols),
             )
 
         self.logger.info(
-            "Assinatura RTD de ativos-base: solicitados=%s confirmados=%s "
-            "pendentes=%s",
+            "Assinatura RTD de ativos-base: solicitados=%s "
+            "confirmados=%s pendentes=%s",
             len(batch),
-            configured_count,
+            len(confirmed_symbols),
             pending_count,
         )
 
-        return configured_count
+        return len(confirmed_symbols)
+
+    def _ensure_connected(self) -> bool:
+        if self._connected:
+            return True
+
+        try:
+            self.rtd_client.connect()
+        except Exception:
+            self.logger.exception(
+                "Falha ao conectar RTD para captura sob demanda."
+            )
+            return False
+
+        self._connected = True
+
+        self.logger.info(
+            "RTD conectado para captura sob demanda. source=%s",
+            "SIMULATED" if self.simulation_mode else "Profit RTD",
+        )
+
+        return True
 
     def start_capture(self) -> None:
         self._pause.clear()
 
     def stop_capture(self) -> None:
+        """
+        Pausa a leitura.
+
+        Não remove assinaturas nem libera leases.
+        """
         self._pause.set()
 
     def stop(self) -> None:
         self._stop.set()
 
     def run_forever(self) -> None:
-        self.rtd_client.connect()
-
         source = "SIMULATED" if self.simulation_mode else "Profit RTD"
-        self.logger.info("Serviço de captura iniciado. source=%s", source)
 
-        while not self._stop.is_set():
-            configured_assets = self._configure_asset_batch(batch_size=50)
-            configured_series = self._configure_series_batch(batch_size=100)
+        self.logger.info(
+            "Serviço de captura iniciado em modo sob demanda. source=%s",
+            source,
+        )
 
-            if configured_assets or configured_series:
-                with self._lock:
-                    pending_series_count = len(self._pending_series)
-                    pending_asset_count = len(self._pending_assets)
+        try:
+            while not self._stop.is_set():
+                try:
+                    # Processa substituições mesmo enquanto pausado.
+                    self._apply_pending_replacement()
 
-                self.logger.info(
-                    "Assinadas nesta rodada: %s séries e %s ativos-base. "
-                    "Pendentes: %s séries e %s ativos-base.",
-                    configured_series,
-                    configured_assets,
-                    pending_series_count,
-                    pending_asset_count,
-                )
-
-            if self._pause.is_set():
-                self._stop.wait(0.2)
-                continue
-
-            updates = self.rtd_client.poll_updates(timeout_seconds=0.5)
-
-            option_rows: list[dict[str, Any]] = []
-            asset_rows: list[dict[str, Any]] = []
-
-            with self._lock:
-                for update in updates:
-                    if update.rtd_symbol in self._asset_symbols:
-                        self._handle_asset_update(
-                            update,
-                            source,
-                            asset_rows,
-                        )
+                    if self._pause.is_set():
+                        self._stop.wait(0.2)
                         continue
 
-                    self._handle_option_update(
-                        update,
-                        source,
-                        option_rows,
+                    with self._lock:
+                        replacement_waiting = (
+                            self._pending_replacement is not None
+                        )
+                        has_symbols = bool(
+                            self._pending_series
+                            or self._pending_assets
+                            or self._configured_symbols
+                            or self._asset_symbols
+                        )
+                        generation = self._config_generation
+
+                    if replacement_waiting:
+                        continue
+
+                    # Start sem configuração não abre o Excel.
+                    if not has_symbols:
+                        self._stop.wait(0.2)
+                        continue
+
+                    if not self._ensure_connected():
+                        self._stop.wait(2.0)
+                        continue
+
+                    self._configure_asset_batch(batch_size=50)
+                    self._configure_series_batch(batch_size=100)
+
+                    if self._stop.is_set() or self._pause.is_set():
+                        continue
+
+                    with self._lock:
+                        if generation != self._config_generation:
+                            continue
+
+                    updates = self.rtd_client.poll_updates(
+                        timeout_seconds=0.5
                     )
 
-            if option_rows:
-                inserted = self.queue_enqueue(option_rows)
+                    option_rows: list[dict[str, Any]] = []
+                    asset_rows: list[dict[str, Any]] = []
 
-                self.logger.info(
-                    "Captura: %s cotações de opções processadas; "
-                    "%s novas na fila.",
-                    len(option_rows),
-                    inserted,
+                    with self._lock:
+                        # Ignora a leitura se chegou outra seleção.
+                        if generation != self._config_generation:
+                            continue
+
+                        for update in updates:
+                            if update.rtd_symbol in self._asset_symbols:
+                                self._handle_asset_update(
+                                    update,
+                                    source,
+                                    asset_rows,
+                                )
+                            else:
+                                self._handle_option_update(
+                                    update,
+                                    source,
+                                    option_rows,
+                                )
+
+                    if option_rows:
+                        inserted = self.queue_enqueue(option_rows)
+                        self.logger.info(
+                            "Captura: %s cotações de opções processadas; "
+                            "%s novas na fila.",
+                            len(option_rows),
+                            inserted,
+                        )
+
+                    if asset_rows:
+                        inserted = self.queue_enqueue_asset(asset_rows)
+                        self.logger.info(
+                            "Captura: %s cotações de ativos-base "
+                            "processadas; %s novas na fila.",
+                            len(asset_rows),
+                            inserted,
+                        )
+
+                except Exception:
+                    self.logger.exception(
+                        "Erro no ciclo de captura. "
+                        "Nova tentativa em 2 segundos."
+                    )
+                    self._stop.wait(2.0)
+
+        finally:
+            # Encerra o RTD na mesma thread usada para captura.
+            try:
+                self.rtd_client.close()
+            except Exception:
+                self.logger.exception(
+                    "Falha ao encerrar RTD no capture_worker."
                 )
-
-            if asset_rows:
-                inserted = self.queue_enqueue_asset(asset_rows)
-
-                self.logger.info(
-                    "Captura: %s cotações de ativos-base processadas; "
-                    "%s novas na fila.",
-                    len(asset_rows),
-                    inserted,
-                )
+            finally:
+                self._connected = False
 
     def _handle_option_update(
         self,
@@ -510,25 +586,19 @@ class CaptureService:
     ) -> None:
         meta = self._meta_by_rtd.get(update.rtd_symbol)
 
-        if not meta:
-            return
-
-        if update.field not in OPTION_FIELDS:
+        if not meta or update.field not in OPTION_FIELDS:
             return
 
         if not is_valid_number(update.value):
             return
 
+        value = to_float(update.value)
+
         bucket = self._last_values.setdefault(
             update.rtd_symbol,
-            {
-                "ULT": None,
-                "OCP": None,
-                "OVD": None,
-            },
+            {"ULT": None, "OCP": None, "OVD": None},
         )
-
-        bucket[update.field] = update.value
+        bucket[update.field] = value
 
         last_price = bucket.get("ULT")
         bid = bucket.get("OCP")
@@ -573,21 +643,16 @@ class CaptureService:
         if spot is None or spot <= 0:
             return
 
-        symbol = update.rtd_symbol.upper()
-
-        # Este método é chamado sob self._lock no loop principal.
+        symbol = update.rtd_symbol.strip().upper()
         self._asset_spots[symbol] = spot
 
         logged_spot = self._logged_asset_spots.get(symbol)
 
-        if (
-            logged_spot is None
-            or not math.isclose(
-                logged_spot,
-                spot,
-                rel_tol=0.0,
-                abs_tol=0.000001,
-            )
+        if logged_spot is None or not math.isclose(
+            logged_spot,
+            spot,
+            rel_tol=0.0,
+            abs_tol=0.000001,
         ):
             self.logger.info(
                 "Spot RTD atualizado: %s = %.4f",
@@ -608,7 +673,5 @@ class CaptureService:
             "data_status": "OK",
         }
 
-        # Os ativos continuam atualizando _asset_spots em toda leitura,
-        # mas somente vão para a fila se houver mudança ou refresh periódico.
         if self.deduplicator.should_send(payload):
             rows.append(payload)

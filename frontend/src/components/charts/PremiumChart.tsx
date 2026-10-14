@@ -8,6 +8,7 @@ import {
   YAxis,
 } from 'recharts'
 
+
 interface Item {
   vencimento: string
   call?: number | null
@@ -22,15 +23,32 @@ interface Item {
   put_symbol_short?: string | null
 }
 
+
 interface PremiumChartProps {
   data: Item[]
   side: 'CALL' | 'PUT'
   selectedSymbols?: string[]
 }
 
+
 interface TooltipPayloadItem {
   payload: Item
 }
+
+
+interface ChartDotProps {
+  cx?: number
+  cy?: number
+  payload?: Item
+}
+
+
+function formatValue(value?: number | null): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(2).replace('.', ',')
+    : 'N/D'
+}
+
 
 function CustomTooltip({
   active,
@@ -50,13 +68,11 @@ function CustomTooltip({
   const premium = side === 'CALL' ? item.call : item.put
   const bid = side === 'CALL' ? item.call_bid : item.put_bid
   const ask = side === 'CALL' ? item.call_ask : item.put_ask
-  const symbol =
-    side === 'CALL' ? item.call_symbol_short : item.put_symbol_short
 
-  const formatValue = (value?: number | null) =>
-    typeof value === 'number' && Number.isFinite(value)
-      ? value.toFixed(2).replace('.', ',')
-      : 'N/D'
+  const symbol =
+    side === 'CALL'
+      ? item.call_symbol_short
+      : item.put_symbol_short
 
   return (
     <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-slate-700 dark:bg-slate-900">
@@ -79,36 +95,48 @@ function CustomTooltip({
   )
 }
 
+
 export function PremiumChart({
   data,
   side,
   selectedSymbols = [],
 }: PremiumChartProps) {
   const dataKey = side === 'CALL' ? 'call' : 'put'
+
   const symbolKey =
-    side === 'CALL' ? 'call_symbol_short' : 'put_symbol_short'
+    side === 'CALL'
+      ? 'call_symbol_short'
+      : 'put_symbol_short'
+
   const fullSymbolKey =
-    side === 'CALL' ? 'call_symbol' : 'put_symbol'
+    side === 'CALL'
+      ? 'call_symbol'
+      : 'put_symbol'
 
   const color = side === 'CALL' ? '#0ea5e9' : '#f97316'
   const selectedColor = '#8b5cf6'
 
-  const renderDot = (props: any) => {
-    const { cx, cy, payload } = props
-
+  const renderDot = ({
+    cx,
+    cy,
+    payload,
+  }: ChartDotProps) => {
     const value = payload?.[dataKey]
 
     if (
-      value === null ||
-      value === undefined ||
-      cx === undefined ||
-      cy === undefined
+      typeof value !== 'number'
+      || !Number.isFinite(value)
+      || typeof cx !== 'number'
+      || !Number.isFinite(cx)
+      || typeof cy !== 'number'
+      || !Number.isFinite(cy)
     ) {
-      return null
+      return <g />
     }
 
     const symbol = payload?.[fullSymbolKey]
-    const isSelected = !!symbol && selectedSymbols.includes(symbol)
+    const isSelected =
+      !!symbol && selectedSymbols.includes(symbol)
 
     if (!isSelected) {
       return (
@@ -144,63 +172,68 @@ export function PremiumChart({
   }
 
   return (
-    <div className="panel h-96 overflow-hidden">
-      <h3 className="mb-3 text-sm font-semibold">
+    <div className="panel flex h-96 flex-col overflow-hidden">
+      <h3 className="mb-3 shrink-0 text-sm font-semibold">
         Prêmio por vencimento — {side}
       </h3>
 
-      <ResponsiveContainer
-        width="100%"
-        height="100%"
-        className="focus:outline-none"
-        tabIndex={-1}
-      >
-        <LineChart
-          data={data}
-          margin={{
-            top: 20,
-            right: 45,
-            bottom: 30,
-            left: 30,
-          }}
+      <div className="min-h-0 min-w-0 flex-1">
+        <ResponsiveContainer
+          width="100%"
+          height="100%"
+          className="focus:outline-none"
+          tabIndex={-1}
         >
-          <XAxis
-            dataKey="vencimento"
-            stroke="#94a3b8"
-            padding={{
-              left: 60,
-              right: 30,
+          <LineChart
+            data={data}
+            margin={{
+              top: 25,
+              right: 45,
+              bottom: 30,
+              left: 30,
             }}
-            tickMargin={10}
-          />
-
-          <YAxis stroke="#94a3b8" width={50} />
-
-          <Tooltip
-            content={
-              <CustomTooltip side={side} />
-            }
-          />
-
-          <Line
-            type="monotone"
-            dataKey={dataKey}
-            stroke={color}
-            name={side}
-            strokeWidth={2}
-            dot={renderDot}
-            activeDot={false}
-            connectNulls={false}
           >
-            <LabelList
-              dataKey={symbolKey}
-              position="top"
-              fontSize={13}
-              fill={color}
+            <XAxis
+              dataKey="vencimento"
+              stroke="#94a3b8"
+              padding={{
+                left: 60,
+                right: 30,
+              }}
+              tickMargin={10}
             />
-          </Line>
-        </LineChart>
-      </ResponsiveContainer>
+
+            <YAxis
+              stroke="#94a3b8"
+              width={50}
+            />
+
+            <Tooltip
+              isAnimationActive={false}
+              content={<CustomTooltip side={side} />}
+            />
+
+            <Line
+              type="monotone"
+              dataKey={dataKey}
+              stroke={color}
+              name={side}
+              strokeWidth={2}
+              dot={renderDot}
+              activeDot={false}
+              connectNulls={false}
+              isAnimationActive={false}
+            >
+              <LabelList
+                dataKey={symbolKey}
+                position="top"
+                fontSize={13}
+                fill={color}
+              />
+            </Line>
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   )
 }

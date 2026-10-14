@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any
+
 
 
 class OfflineQueue:
@@ -11,8 +13,10 @@ class OfflineQueue:
         self.db_path = db_path
         self._init_db()
 
+
     def _conn(self):
         return sqlite3.connect(self.db_path)
+
 
     def _init_db(self):
         with self._conn() as conn:
@@ -27,6 +31,7 @@ class OfflineQueue:
                 """
             )
 
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS pending_asset_quotes (
@@ -38,7 +43,9 @@ class OfflineQueue:
                 """
             )
 
+
             conn.commit()
+
 
     @staticmethod
     def _format_value(value: Any) -> str:
@@ -46,11 +53,13 @@ class OfflineQueue:
             return ""
         return str(value)
 
+
     @staticmethod
     def dedup_key(payload: dict[str, Any]) -> str:
         """
         A cotação é considerada repetida quando a opção e os valores
         de último, bid e ask são iguais.
+
 
         O timestamp não entra na chave, porque o RTD pode atualizar
         o horário sem alterar os preços.
@@ -63,6 +72,7 @@ class OfflineQueue:
                 OfflineQueue._format_value(payload.get("ask")),
             ]
         )
+
 
     @staticmethod
     def asset_dedup_key(payload: dict[str, Any]) -> str:
@@ -78,12 +88,15 @@ class OfflineQueue:
             ]
         )
 
+
     def enqueue_many(self, rows: list[dict[str, Any]]) -> int:
         inserted = 0
+
 
         with self._conn() as conn:
             for row in rows:
                 key = self.dedup_key(row)
+
 
                 try:
                     conn.execute(
@@ -97,16 +110,21 @@ class OfflineQueue:
                 except sqlite3.IntegrityError:
                     pass
 
+
             conn.commit()
 
+
         return inserted
+
 
     def enqueue_asset_quotes(self, rows: list[dict[str, Any]]) -> int:
         inserted = 0
 
+
         with self._conn() as conn:
             for row in rows:
                 key = self.asset_dedup_key(row)
+
 
                 try:
                     conn.execute(
@@ -120,9 +138,12 @@ class OfflineQueue:
                 except sqlite3.IntegrityError:
                     pass
 
+
             conn.commit()
 
+
         return inserted
+
 
     def dequeue_batch(self, batch_size: int) -> list[tuple[int, dict[str, Any]]]:
         with self._conn() as conn:
@@ -136,12 +157,15 @@ class OfflineQueue:
                 (batch_size,),
             )
 
+
             rows = [
                 (row_id, json.loads(payload_json))
                 for row_id, payload_json in cur.fetchall()
             ]
 
+
         return rows
+
 
     def dequeue_asset_batch(self, batch_size: int) -> list[tuple[int, dict[str, Any]]]:
         with self._conn() as conn:
@@ -155,18 +179,31 @@ class OfflineQueue:
                 (batch_size,),
             )
 
+
             rows = [
                 (row_id, json.loads(payload_json))
                 for row_id, payload_json in cur.fetchall()
             ]
 
+
         return rows
 
+
     def ack_ids(self, ids: list[int]) -> None:
+        """
+        Remove da fila as cotações de opções confirmadas pelo backend.
+
+
+        Também é usado para descartar cotações rejeitadas por não possuírem
+        lease ativo, evitando que uma demanda antiga bloqueie as cotações
+        novas.
+        """
         if not ids:
             return
 
+
         marks = ",".join("?" for _ in ids)
+
 
         with self._conn() as conn:
             conn.execute(
@@ -175,11 +212,17 @@ class OfflineQueue:
             )
             conn.commit()
 
+
     def ack_asset_ids(self, ids: list[int]) -> None:
+        """
+        Remove da fila as cotações de ativos-base confirmadas pelo backend.
+        """
         if not ids:
             return
 
+
         marks = ",".join("?" for _ in ids)
+
 
         with self._conn() as conn:
             conn.execute(
@@ -188,15 +231,18 @@ class OfflineQueue:
             )
             conn.commit()
 
+
     def size(self) -> int:
         with self._conn() as conn:
             cur = conn.execute("SELECT COUNT(*) FROM pending_quotes")
             return int(cur.fetchone()[0])
 
+
     def asset_size(self) -> int:
         with self._conn() as conn:
             cur = conn.execute("SELECT COUNT(*) FROM pending_asset_quotes")
             return int(cur.fetchone()[0])
+
 
     def clear(self) -> None:
         """Limpa toda a fila local. Use apenas para testes."""

@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+
 import requests
+
 
 from thlpro_client.models import SendResult
 
 
+
 class APIError(Exception):
     pass
+
 
 
 def compute_backoff_seconds(
@@ -22,6 +27,7 @@ def compute_backoff_seconds(
     return min(cap, base * (2 ** max(0, attempt - 1)))
 
 
+
 @dataclass
 class THLProAPIClient:
     base_url: str
@@ -29,14 +35,18 @@ class THLProAPIClient:
     token: str = ""
     api_key: str = ""
 
+
     def _url(self, path: str) -> str:
         return f"{self.base_url.rstrip('/')}{path}"
+
 
     def _headers_user(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
 
+
     def _headers_client(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"}
+
 
     def login(self, email: str, password: str) -> str:
         response = requests.post(
@@ -45,14 +55,17 @@ class THLProAPIClient:
             timeout=self.timeout,
         )
 
+
         if response.status_code != 200:
             raise APIError(
                 f"Falha no login: {response.status_code} {response.text}"
             )
 
+
         token = response.json()["access_token"]
         self.token = token
         return token
+
 
     def register_client(
         self,
@@ -66,6 +79,7 @@ class THLProAPIClient:
             "version": version,
         }
 
+
         response = requests.post(
             self._url("/clients/register"),
             json=payload,
@@ -73,14 +87,17 @@ class THLProAPIClient:
             timeout=self.timeout,
         )
 
+
         if response.status_code != 200:
             raise APIError(
                 f"Falha no registro: {response.status_code} {response.text}"
             )
 
+
         body = response.json()
         self.api_key = body["api_key"]
         return body
+
 
     def get_config(
         self,
@@ -90,14 +107,17 @@ class THLProAPIClient:
         """
         Busca a configuração de captura.
 
+
         Primeira chamada:
             get_config(include_series=False)
+
 
         Após o cliente obter ULT dos ativos-base:
             get_config(
                 include_series=True,
                 spots={"BOVA11": 200.00, "ABEV3": 14.50},
             )
+
 
         O backend recebe spots em parâmetros repetidos:
             ?spot=BOVA11:200.00&spot=ABEV3:14.50
@@ -106,19 +126,24 @@ class THLProAPIClient:
             ("include_series", str(include_series).lower()),
         ]
 
+
         for symbol, value in (spots or {}).items():
             normalized_symbol = str(symbol).strip().upper()
 
+
             if not normalized_symbol:
                 continue
+
 
             try:
                 price = Decimal(str(value))
             except Exception:
                 continue
 
+
             if price <= 0:
                 continue
+
 
             params.append(
                 (
@@ -127,6 +152,7 @@ class THLProAPIClient:
                 )
             )
 
+
         response = requests.get(
             self._url("/clients/config"),
             params=params,
@@ -134,13 +160,55 @@ class THLProAPIClient:
             timeout=self.timeout,
         )
 
+
         if response.status_code != 200:
             raise APIError(
                 f"Falha ao obter config: "
                 f"{response.status_code} {response.text}"
             )
 
+
         return response.json()
+
+
+    def get_capture_config(self) -> dict[str, Any] | None:
+        """
+        Consulta se existe uma solicitação de captura sob demanda.
+
+
+        O frontend solicita a captura ao selecionar um ativo e strike.
+        O backend guarda a última solicitação e este método a recupera.
+
+
+        Retorna None quando não há solicitação pendente.
+        """
+        response = requests.get(
+            self._url("/clients/capture-config"),
+            headers=self._headers_client(),
+            timeout=self.timeout,
+        )
+
+
+        if response.status_code == 404:
+            return None
+
+
+        if response.status_code != 200:
+            raise APIError(
+                f"Falha ao obter captura sob demanda: "
+                f"{response.status_code} {response.text}"
+            )
+
+
+        body = response.json()
+
+
+        if not body:
+            return None
+
+
+        return body
+
 
     def heartbeat(self) -> dict[str, Any]:
         response = requests.post(
@@ -149,12 +217,15 @@ class THLProAPIClient:
             timeout=self.timeout,
         )
 
+
         if response.status_code != 200:
             raise APIError(
                 f"Falha heartbeat: {response.status_code} {response.text}"
             )
 
+
         return response.json()
+
 
     def send_quotes(self, rows: list[dict[str, Any]]) -> SendResult:
         response = requests.post(
@@ -164,18 +235,22 @@ class THLProAPIClient:
             timeout=self.timeout,
         )
 
+
         if response.status_code != 200:
             raise APIError(
                 f"Falha envio quotes: "
                 f"{response.status_code} {response.text}"
             )
 
+
         body = response.json()
+
 
         return SendResult(
             accepted=body.get("accepted", 0),
             rejected=body.get("rejected", []),
         )
+
 
     def send_asset_quotes(
         self,
@@ -183,6 +258,7 @@ class THLProAPIClient:
     ) -> SendResult:
         """
         Envia cotações dos ativos-base, como BOVA11 e ABEV3.
+
 
         Usa a API key do cliente quando disponível; durante o registro,
         pode usar o JWT do usuário.
@@ -193,11 +269,13 @@ class THLProAPIClient:
             else self._headers_user()
         )
 
+
         if not headers.get("Authorization"):
             raise APIError(
                 "Nenhuma credencial disponível para enviar "
                 "cotações de ativos."
             )
+
 
         response = requests.post(
             self._url("/assets/quotes"),
@@ -206,13 +284,16 @@ class THLProAPIClient:
             timeout=self.timeout,
         )
 
+
         if response.status_code != 200:
             raise APIError(
                 f"Falha envio asset quotes: "
                 f"{response.status_code} {response.text}"
             )
 
+
         body = response.json()
+
 
         return SendResult(
             accepted=body.get("accepted", 0),

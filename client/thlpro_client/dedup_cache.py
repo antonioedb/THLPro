@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from time import monotonic
 from typing import Any
 
 
+
 ASSET_REFRESH_INTERVAL_SECONDS = 30.0
+
 
 
 @dataclass
@@ -18,9 +21,11 @@ class QuoteState:
     pending: bool = False
 
 
+
 def to_decimal(value: Any) -> Decimal | None:
     """
     Converte valor numérico do RTD em Decimal.
+
 
     Aceita valores numéricos e texto com vírgula decimal simples,
     como "15,99".
@@ -28,16 +33,21 @@ def to_decimal(value: Any) -> Decimal | None:
     if value is None or value == "":
         return None
 
+
     if isinstance(value, bool):
         return None
 
+
     raw = str(value).strip()
+
 
     if not raw or raw.startswith("#"):
         return None
 
+
     if "," in raw and "." not in raw:
         raw = raw.replace(",", ".")
+
 
     try:
         return Decimal(raw)
@@ -45,13 +55,16 @@ def to_decimal(value: Any) -> Decimal | None:
         return None
 
 
+
 class QuoteDeduplicator:
     """
     Deduplica opções e ativos-base.
 
+
     Chaves:
     - option:<option_symbol>
     - asset:<asset>
+
 
     Regras:
     - Opções: primeiro valor válido e, depois, somente mudanças reais de
@@ -59,6 +72,7 @@ class QuoteDeduplicator:
     - Ativos-base: primeiro valor válido, mudanças reais e refresh de
       segurança periódico.
     """
+
 
     def __init__(
         self,
@@ -69,21 +83,52 @@ class QuoteDeduplicator:
     ):
         self.min_interval_ms = max(0, min_interval_ms)
 
+
         self.asset_refresh_interval_seconds = max(
             1.0,
             asset_refresh_interval_seconds,
         )
 
+
         self._state: dict[str, QuoteState] = {}
+
+
+    def reset_symbols(self, symbols: list[str]) -> None:
+        """
+        Remove o estado de deduplicação dos símbolos informados.
+
+
+        Usado na captura sob demanda: após o usuário trocar o strike,
+        as opções do novo strike devem ser reenviadas ao backend na
+        primeira leitura RTD, mesmo que os valores não tenham mudado.
+        Isso atualiza o quote_timestamp e indica que a cotação foi
+        verificada agora.
+        """
+        normalized = {
+            str(symbol).strip().upper()
+            for symbol in symbols
+            if symbol
+        }
+
+
+        if not normalized:
+            return
+
+
+        for symbol in normalized:
+            self._state.pop(f"option:{symbol}", None)
+
 
     def should_send(self, payload: dict[str, Any]) -> bool:
         """
         Retorna True quando a cotação deve entrar na fila de envio.
 
+
         Para opções:
         - primeira leitura válida;
         - alteração em último preço, bid ou ask;
         - alteração pendente após passar o intervalo mínimo.
+
 
         Para ativos-base:
         - as mesmas regras acima;
@@ -91,10 +136,13 @@ class QuoteDeduplicator:
         """
         state_key, is_asset = self._get_state_key(payload)
 
+
         if state_key is None:
             return False
 
+
         now_mono = monotonic()
+
 
         current = QuoteState(
             last_price=to_decimal(
@@ -105,6 +153,7 @@ class QuoteDeduplicator:
             sent_at_monotonic=now_mono,
         )
 
+
         if (
             current.last_price is None
             and current.bid is None
@@ -112,12 +161,15 @@ class QuoteDeduplicator:
         ):
             return False
 
+
         old = self._state.get(state_key)
+
 
         # Primeira cotação válida de uma opção ou ativo-base.
         if old is None:
             self._state[state_key] = current
             return True
+
 
         changed = (
             current.last_price != old.last_price
@@ -125,8 +177,10 @@ class QuoteDeduplicator:
             or current.ask != old.ask
         )
 
+
         elapsed_seconds = now_mono - old.sent_at_monotonic
         elapsed_ms = elapsed_seconds * 1000.0
+
 
         # Somente ativos-base têm refresh forçado. Para opções, uma
         # cotação idêntica não deve voltar à fila apenas pelo tempo.
@@ -135,10 +189,12 @@ class QuoteDeduplicator:
             and elapsed_seconds >= self.asset_refresh_interval_seconds
         )
 
+
         # Nem preço nem livro mudaram; e o ativo ainda não precisa de
         # refresh periódico.
         if not changed and not old.pending and not refresh_due:
             return False
+
 
         # Houve mudança, mas ela chegou antes do intervalo mínimo. Guarda
         # o dado novo e permite que uma leitura posterior o envie.
@@ -152,6 +208,7 @@ class QuoteDeduplicator:
             )
             return False
 
+
         # Mudança real, refresh de ativo-base ou mudança pendente liberada.
         self._state[state_key] = QuoteState(
             last_price=current.last_price,
@@ -161,7 +218,9 @@ class QuoteDeduplicator:
             pending=False,
         )
 
+
         return True
+
 
     @staticmethod
     def _get_state_key(
@@ -170,6 +229,7 @@ class QuoteDeduplicator:
         """
         Retorna (chave, é_ativo_base).
 
+
         option_symbol tem prioridade porque o payload de uma opção também
         contém o campo asset com o ativo subjacente.
         """
@@ -177,12 +237,16 @@ class QuoteDeduplicator:
             payload.get("option_symbol", "")
         ).strip().upper()
 
+
         if option_symbol:
             return f"option:{option_symbol}", False
 
+
         asset = str(payload.get("asset", "")).strip().upper()
+
 
         if asset:
             return f"asset:{asset}", True
+
 
         return None, False
