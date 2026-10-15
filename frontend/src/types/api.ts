@@ -173,3 +173,43 @@ export interface WsMarketEvent {
   data?: Array<Record<string, unknown>> | Record<string, unknown>
   message?: string
 }
+export type OptionSeriesStatus = 'active' | 'expired' | 'inactive'
+
+
+export interface OptionSeries {
+  id: number
+  asset: string
+  option_symbol: string
+  option_type: 'CALL' | 'PUT'
+  strike: string
+  expiration_date: string
+  status: OptionSeriesStatus
+  active: boolean
+  updated_at: string
+}
+
+
+export interface OptionSeriesListResponse {
+  items: OptionSeries[]
+  total: number
+  active_count: number
+  expired_count: number
+  inactive_count: number
+}
+
+
+export interface SeriesSyncStatus {
+  last_run_at: string | null
+  last_success_at: string | null
+  next_run_at: string | null
+  last_result: SyncSummary | null
+  source_url: string
+  file_name: string | null
+  file_last_modified: string | null
+}
+
+
+export interface SeriesSyncResponse {
+  status: SeriesSyncStatus
+  summary: SyncSummary
+}

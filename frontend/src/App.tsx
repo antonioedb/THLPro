@@ -9,6 +9,7 @@ import AssetsPage from './pages/admin/Assets'
 import ClientsPage from './pages/admin/Clients'
 import LogsPage from './pages/admin/Logs'
 import SyncPage from './pages/admin/Sync'
+import SeriesB3Page from './pages/admin/SeriesB3'
 
 function Protected() {
   const { user, loading } = useAuth()
@@ -36,7 +37,8 @@ export default function App() {
               <Route path="assets" element={<AssetsPage />} />
               <Route path="clients" element={<ClientsPage />} />
               <Route path="logs" element={<LogsPage />} />
-              <Route path="sync" element={<SyncPage />} />
+              <Route path="series" element={<SeriesB3Page />} />
+              <Route path="sync" element={<SyncPage />} />            
             </Route>
           </Route>
         </Route>

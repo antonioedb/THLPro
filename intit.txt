@@ -1,0 +1,58 @@
+ 
+cd C:\projetos\thlpro\backend
+.\.venv\Scripts\activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+  
+  
+cd C:\projetos\thlpro\frontend
+npm run dev
+  
+  
+cd C:\projetos\thlpro\client
+.\.venv\Scripts\activate
+python -m thlpro_client
+  
+----------------------------------------------------
+ 
+#parar servico travado backend
+  
+Get-NetTCPConnection -LocalPort 8000 -State Listen |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object {
+    Stop-Process -Id $_ -Force
+  }
+----------------------------------------------------
+  
+# iniciar cliente log  
+  
+cd C:\Projetos\THLPro\client
+.\.venv\Scripts\activate
+
+
+python -m thlpro_client 2>&1 |
+  Tee-Object -FilePath .\client_rtd.log |
+  Select-String 'Ativo Inv[áa]lido'
+----------------------------------------------------
+
+ou
+----------------------------------------------------
+cd C:\Projetos\THLPro\client
+.\.venv\Scripts\activate
+
+python -m thlpro_client 2>&1 |
+  Select-String 'Ativo Inv' |
+  Tee-Object -FilePath .\invalidos_rtd.log
+
+
+----------------------------------------------------
+
+# filtrar o log
+ 
+ $tickers = Select-String -LiteralPath "C:\Projetos\THLPro\client\invalidos_rtd.log" -Pattern 'Diagn.{1,3}stico RTD:\s*([A-Z0-9]+)\..*Ativo Inv' |
+  ForEach-Object { $_.Matches[0].Groups[1].Value } |
+  Sort-Object -Unique
+
+$lista = $tickers -join ','
+
+$lista
+$lista | Set-Content -LiteralPath "$env:USERPROFILE\Desktop\tickers_invalidos.txt" -Encoding UTF8 

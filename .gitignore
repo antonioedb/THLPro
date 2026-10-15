@@ -149,3 +149,5 @@ temp/
 # ==========================================
 .docker/
 docker-compose.override.yml
+
+backend/data/*

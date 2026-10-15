@@ -1226,7 +1226,7 @@ function OptionTable({
                       }
                     >
                       {fmtTime(row.quote?.quote_timestamp)}
-                      {stale ? ' (atrasado)' : ''}
+                      {stale ? ' (ver book)' : ''}
                     </span>
                   )}
                 </td>

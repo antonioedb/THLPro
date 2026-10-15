@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+
 import tkinter as tk
 from tkinter import messagebox
 
+
 from thlpro_client.config import ClientConfig
+
 
 
 class ConfigWindow:
@@ -12,16 +15,18 @@ class ConfigWindow:
         self.on_save = on_save
         self.root = tk.Tk()
         self.root.title("THLPro Cliente - Configurações")
-        self.root.geometry("520x280")
+        self.root.geometry("520x260")
+
 
         self.server_var = tk.StringVar(value=config.server_url)
         self.email_var = tk.StringVar(value=config.email)
         self.password_var = tk.StringVar(value="")
         self.client_name_var = tk.StringVar(value=config.client_name)
         self.computer_name_var = tk.StringVar(value=config.computer_name)
-        self.simulate_var = tk.BooleanVar(value=config.simulate)
+
 
         self._build()
+
 
     def _build(self):
         fields = [
@@ -36,11 +41,11 @@ class ConfigWindow:
             ent = tk.Entry(self.root, textvariable=var, width=45, show="*" if "Senha" in label else "")
             ent.grid(row=i, column=1, padx=8, pady=6)
 
-        tk.Checkbutton(self.root, text="Modo simulação (desenvolvimento)", variable=self.simulate_var).grid(
-            row=5, column=1, sticky="w", padx=8, pady=8
+
+        tk.Button(self.root, text="Salvar e iniciar", command=self._save).grid(
+            row=5, column=1, sticky="e", padx=8, pady=12
         )
 
-        tk.Button(self.root, text="Salvar e iniciar", command=self._save).grid(row=6, column=1, sticky="e", padx=8, pady=12)
 
     def _save(self):
         if not self.server_var.get().strip() or not self.email_var.get().strip():
@@ -50,9 +55,10 @@ class ConfigWindow:
         self.config.email = self.email_var.get().strip()
         self.config.client_name = self.client_name_var.get().strip() or "THLPro Local"
         self.config.computer_name = self.computer_name_var.get().strip()
-        self.config.simulate = self.simulate_var.get()
+        self.config.simulate = False
         self.on_save(self.config, self.password_var.get())
         self.root.destroy()
+
 
     def run(self):
         self.root.mainloop()
