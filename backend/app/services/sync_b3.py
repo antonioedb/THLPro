@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 
-
 import io
 import logging
 import zipfile
@@ -13,31 +12,24 @@ from pathlib import Path
 from typing import Iterable
 
 
-
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-
 from app.models import Asset, OptionSeries, OptionType, SynchronizationLog
-
-
 
 
 logger = logging.getLogger(__name__)
 
 
-
 UTC = timezone.utc
-
 
 
 B3_SERIES_URL = (
     "https://www.b3.com.br/lumis/portal/file/fileDownload.jsp"
     "?fileId=8AE490C9A134A9B101A13F33600D02CC"
 )
-
 
 
 B3_REQUEST_HEADERS = {
@@ -59,9 +51,7 @@ B3_REQUEST_HEADERS = {
 }
 
 
-
 LOCAL_SERIES_DIR = Path("data")
-
 
 
 LOCAL_SERIES_PATTERNS = (
@@ -71,12 +61,8 @@ LOCAL_SERIES_PATTERNS = (
 )
 
 
-
-
 class B3SyncError(Exception):
     pass
-
-
 
 
 @dataclass
@@ -88,8 +74,6 @@ class ParsedSeries:
     expiration_date: date
     expiration_month: str
     needs_review: bool = False
-
-
 
 
 ASSET_ALIASES: dict[tuple[str, str], str] = {
@@ -169,67 +153,47 @@ ASSET_ALIASES: dict[tuple[str, str], str] = {
     ("VIVA", "ON"): "VIVA3",
     ("WEGE", "ON"): "WEGE3",
     ("YDUQ", "ON"): "YDUQ3",
-
-
-
     ("ITUB", "ON"): "ITUB3",
-
-
-
     ("BOVA", "CI"): "BOVA11",
 }
-
-
 
 
 def normalize_underlying_symbol(
     raw_symbol: str,
     share_type: str,
 ) -> str | None:
-    base_symbol = raw_symbol.strip().upper()
+    raw_tokens = raw_symbol.strip().upper().split()
+
+    if not raw_tokens:
+        return None
+
+    base_symbol = raw_tokens[0]
+
     share_tokens = share_type.strip().upper().split()
     share_kind = share_tokens[0] if share_tokens else ""
-
-
 
     if not base_symbol or not share_kind:
         return None
 
-
-
     return ASSET_ALIASES.get((base_symbol, share_kind))
-
-
 
 
 def parse_b3_lines(lines: Iterable[str]) -> list[ParsedSeries]:
     parsed: list[ParsedSeries] = []
     unmapped: Counter[tuple[str, str]] = Counter()
 
-
-
     for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
-
-
 
         if not line or line.startswith("01|"):
             continue
 
-
-
         parts = line.split("|")
-
-
 
         if len(parts) < 18:
             continue
 
-
-
         option_type_raw = parts[3].strip().upper()
-
-
 
         if option_type_raw == "OPCOES COMPRA":
             option_type = OptionType.CALL
@@ -238,36 +202,27 @@ def parse_b3_lines(lines: Iterable[str]) -> list[ParsedSeries]:
         else:
             continue
 
-
-
         underlying_raw = parts[6]
         share_type_raw = parts[7]
         option_symbol = parts[13].strip().upper()
-
-
 
         underlying = normalize_underlying_symbol(
             underlying_raw,
             share_type_raw,
         )
 
-
-
         if not underlying:
+            underlying_tokens = underlying_raw.strip().upper().split()
+            underlying_base = underlying_tokens[0] if underlying_tokens else ""
+
             share_tokens = share_type_raw.strip().upper().split()
             share_kind = share_tokens[0] if share_tokens else ""
 
-
-
             unmapped[
-                (underlying_raw.strip().upper(), share_kind)
+                (underlying_base, share_kind)
             ] += 1
 
-
-
             continue
-
-
 
         if not option_symbol:
             raise B3SyncError(
@@ -275,17 +230,11 @@ def parse_b3_lines(lines: Iterable[str]) -> list[ParsedSeries]:
                 f"para o ativo {underlying}."
             )
 
-
-
         try:
             strike = Decimal(parts[16].strip())
 
-
-
             if not strike.is_finite() or strike < 0:
                 raise ValueError("Strike inválido.")
-
-
 
             expiration_date = datetime.strptime(
                 parts[17].strip(),
@@ -298,8 +247,6 @@ def parse_b3_lines(lines: Iterable[str]) -> list[ParsedSeries]:
                 "para não gravar valores fictícios."
             ) from exc
 
-
-
         parsed.append(
             ParsedSeries(
                 asset_symbol=underlying,
@@ -311,15 +258,11 @@ def parse_b3_lines(lines: Iterable[str]) -> list[ParsedSeries]:
             )
         )
 
-
-
     if unmapped:
         details = "; ".join(
             f"{base or '(vazio)'} / {kind or '(vazio)'}: {count}"
             for (base, kind), count in sorted(unmapped.items())
         )
-
-
 
         logger.warning(
             "Séries ignoradas por falta de alias "
@@ -327,11 +270,7 @@ def parse_b3_lines(lines: Iterable[str]) -> list[ParsedSeries]:
             details,
         )
 
-
-
     return parsed
-
-
 
 
 def extract_series_text_from_zip(zip_bytes: bytes) -> str:
@@ -341,14 +280,10 @@ def extract_series_text_from_zip(zip_bytes: bytes) -> str:
             errors="replace",
         )
 
-
-
         raise B3SyncError(
             "A B3 não retornou um arquivo ZIP válido. "
             f"Conteúdo inicial: {preview!r}"
         )
-
-
 
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
         text_members = [
@@ -358,14 +293,10 @@ def extract_series_text_from_zip(zip_bytes: bytes) -> str:
             and name.lower().endswith((".txt", ".csv"))
         ]
 
-
-
         if not text_members:
             raise B3SyncError(
                 "O ZIP da B3 não contém nenhum arquivo .txt ou .csv."
             )
-
-
 
         preferred = [
             name
@@ -373,8 +304,6 @@ def extract_series_text_from_zip(zip_bytes: bytes) -> str:
             if name.replace("\\", "/").rsplit("/", 1)[-1].lower()
             == "si_d_sede.txt"
         ]
-
-
 
         if preferred:
             member_name = preferred[0]
@@ -386,32 +315,20 @@ def extract_series_text_from_zip(zip_bytes: bytes) -> str:
                 "SI_D_SEDE.txt. Não foi possível escolher o arquivo."
             )
 
-
-
         return archive.read(member_name).decode("utf-8-sig")
-
-
 
 
 def find_latest_local_series_file() -> Path | None:
     candidates: list[Path] = []
 
-
-
     for pattern in LOCAL_SERIES_PATTERNS:
         candidate = LOCAL_SERIES_DIR / pattern
-
-
 
         if candidate.is_file():
             candidates.append(candidate)
 
-
-
     if not candidates:
         return None
-
-
 
     return max(
         candidates,
@@ -419,12 +336,8 @@ def find_latest_local_series_file() -> Path | None:
     )
 
 
-
-
 async def deactivate_expired_series(db: AsyncSession) -> int:
     today = date.today()
-
-
 
     rows = (
         await db.execute(
@@ -435,16 +348,10 @@ async def deactivate_expired_series(db: AsyncSession) -> int:
         )
     ).scalars().all()
 
-
-
     for series in rows:
         series.active = False
 
-
-
     return len(rows)
-
-
 
 
 async def sync_from_lines(
@@ -454,24 +361,16 @@ async def sync_from_lines(
 ) -> dict:
     parsed = parse_b3_lines(lines)
 
-
-
     if not parsed:
         raise B3SyncError(
             "Nenhuma série reconhecida pelos aliases foi encontrada. "
             "Nenhuma alteração foi realizada."
         )
 
-
-
     unique_rows: dict[str, ParsedSeries] = {}
-
-
 
     for row in parsed:
         previous = unique_rows.get(row.option_symbol)
-
-
 
         if previous is not None and previous != row:
             raise B3SyncError(
@@ -479,11 +378,7 @@ async def sync_from_lines(
                 "conflitantes no arquivo. Importação interrompida."
             )
 
-
-
         unique_rows[row.option_symbol] = row
-
-
 
     today = date.today()
     created = 0
@@ -493,15 +388,11 @@ async def sync_from_lines(
     errors: list[str] = []
     warnings: list[str] = []
 
-
-
     if source.upper() == "LOCAL_FALLBACK":
         warnings.append(
             "A B3 não retornou o arquivo remoto. A sincronização usou "
             "o arquivo local mais recente, que pode não estar atualizado."
         )
-
-
 
     try:
         assets = {
@@ -511,8 +402,6 @@ async def sync_from_lines(
             ).scalars().all()
         }
 
-
-
         existing_series = {
             series.option_symbol: series
             for series in (
@@ -520,12 +409,8 @@ async def sync_from_lines(
             ).scalars().all()
         }
 
-
-
         for row in unique_rows.values():
             asset = assets.get(row.asset_symbol)
-
-
 
             if asset is None:
                 asset = Asset(
@@ -541,28 +426,18 @@ async def sync_from_lines(
                     rtd_identifier_pattern="{symbol}",
                 )
 
-
-
                 db.add(asset)
                 await db.flush()
-
-
 
                 assets[row.asset_symbol] = asset
                 assets_created += 1
 
-
-
             series = existing_series.get(row.option_symbol)
             should_be_active = row.expiration_date >= today
-
-
 
             if series is not None:
                 if series.active and not should_be_active:
                     deactivated += 1
-
-
 
                 series.asset_id = asset.id
                 series.option_type = row.option_type
@@ -572,8 +447,6 @@ async def sync_from_lines(
                 series.needs_review = row.needs_review
                 series.source = source.upper()
                 series.active = should_be_active
-
-
 
                 updated += 1
             else:
@@ -589,29 +462,17 @@ async def sync_from_lines(
                     needs_review=row.needs_review,
                 )
 
-
-
                 db.add(series)
                 existing_series[row.option_symbol] = series
 
-
-
                 created += 1
 
-
-
         await db.flush()
-
-
 
         expired_deactivated = await deactivate_expired_series(db)
         deactivated += expired_deactivated
 
-
-
         executed_at = datetime.now(UTC)
-
-
 
         summary = {
             "created": created,
@@ -620,8 +481,6 @@ async def sync_from_lines(
             "errors": errors,
             "warnings": warnings,
         }
-
-
 
         db.add(
             SynchronizationLog(
@@ -643,21 +502,13 @@ async def sync_from_lines(
             )
         )
 
-
-
         await db.commit()
 
-
-
         return summary
-
-
 
     except Exception:
         await db.rollback()
         raise
-
-
 
 
 async def sync_from_b3(
@@ -673,8 +524,6 @@ async def sync_from_b3(
         else B3_SERIES_URL
     )
 
-
-
     try:
         async with httpx.AsyncClient(
             timeout=30.0,
@@ -684,18 +533,12 @@ async def sync_from_b3(
             response = await client.get(request_url)
             response.raise_for_status()
 
-
-
             content = response.content
-
-
 
             if content.startswith(b"PK"):
                 series_text = extract_series_text_from_zip(content)
             else:
                 text = response.text
-
-
 
                 if (
                     "|OPCOES COMPRA|" in text
@@ -717,27 +560,19 @@ async def sync_from_b3(
     ) as exc:
         b3_error = exc
 
-
-
         logger.warning(
             "Falha no download das séries B3: %s",
             exc,
         )
 
-
-
     if not series_text:
         local_file = find_latest_local_series_file()
-
-
 
         if local_file is None:
             raise B3SyncError(
                 "A B3 não retornou o arquivo de séries autorizadas "
                 "e não há arquivo local disponível."
             ) from b3_error
-
-
 
         try:
             series_text = local_file.read_text(
@@ -748,18 +583,12 @@ async def sync_from_b3(
                 f"Não foi possível ler o arquivo local: {local_file}."
             ) from exc
 
-
-
         source = "LOCAL_FALLBACK"
-
-
 
         logger.warning(
             "Usando arquivo local de séries: %s",
             local_file,
         )
-
-
 
     return await sync_from_lines(
         db,
@@ -768,22 +597,16 @@ async def sync_from_b3(
     )
 
 
-
-
 async def sync_from_file(
     db: AsyncSession,
     filepath: str,
 ) -> dict:
     path = Path(filepath)
 
-
-
     if not path.is_file():
         raise FileNotFoundError(
             "Arquivo de séries não encontrado para sincronização."
         )
-
-
 
     try:
         series_text = path.read_text(
@@ -793,8 +616,6 @@ async def sync_from_file(
         raise B3SyncError(
             f"Não foi possível ler o arquivo de séries: {path}."
         ) from exc
-
-
 
     return await sync_from_lines(
         db,
