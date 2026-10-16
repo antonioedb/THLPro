@@ -2,15 +2,28 @@ from datetime import datetime, timezone
 UTC = timezone.utc
 from decimal import Decimal
 
+
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
 
 from app.core.deps import require_admin
 from app.database import get_db
 from app.models import Asset, AssetQuote, OptionSeries, SynchronizationLog, SystemSetting, User
 
+
+
 router = APIRouter(prefix="/admin", tags=["Administração"])
+
+
+
+
+PROTECTED_ASSET_SYMBOLS = {"ABEV3", "BOVA11"}
+
+
 
 
 @router.get("/logs", summary="Consulta logs administrativos")
@@ -39,10 +52,14 @@ async def get_logs(
     ]
 
 
+
+
 @router.get("/settings", summary="Lista configurações do sistema")
 async def get_settings(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> list[dict]:
     rows = (await db.execute(select(SystemSetting).order_by(SystemSetting.key))).scalars().all()
     return [{"key": r.key, "value": r.value, "description": r.description, "updated_at": r.updated_at} for r in rows]
+
+
 
 
 @router.post("/settings/{key}", summary="Atualiza configuração do sistema")
@@ -58,6 +75,101 @@ async def update_setting(key: str, value: dict, _: User = Depends(require_admin)
     return {"message": "Configuração atualizada com sucesso."}
 
 
+
+
+@router.get(
+    "/assets/generics",
+    summary="Lista ativos que serão removidos na limpeza",
+)
+async def list_generic_assets(
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    rows = (
+        await db.execute(
+            select(
+                Asset.id,
+                Asset.symbol,
+                Asset.name,
+                Asset.enabled,
+                func.count(OptionSeries.id).label("series_count"),
+            )
+            .outerjoin(
+                OptionSeries,
+                OptionSeries.asset_id == Asset.id,
+            )
+            .group_by(
+                Asset.id,
+                Asset.symbol,
+                Asset.name,
+                Asset.enabled,
+            )
+            .order_by(Asset.symbol)
+        )
+    ).all()
+
+
+    return [
+        {
+            "id": asset_id,
+            "symbol": symbol,
+            "name": name,
+            "enabled": enabled,
+            "series_count": int(series_count),
+            "protected": symbol in PROTECTED_ASSET_SYMBOLS,
+        }
+        for asset_id, symbol, name, enabled, series_count in rows
+        if symbol not in PROTECTED_ASSET_SYMBOLS
+    ]
+
+
+
+
+@router.post(
+    "/assets/cleanup-generics",
+    summary="Remove todos os ativos exceto ABEV3 e BOVA11",
+)
+async def cleanup_generic_assets(
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    rows = (
+        await db.execute(
+            select(Asset).where(
+                Asset.symbol.notin_(PROTECTED_ASSET_SYMBOLS)
+            )
+        )
+    ).scalars().all()
+
+
+    removed: list[str] = []
+
+
+    for asset in rows:
+        removed.append(asset.symbol)
+        await db.delete(asset)
+
+
+    await db.commit()
+
+
+    preserved = sorted(PROTECTED_ASSET_SYMBOLS)
+
+
+    return {
+        "removed": removed,
+        "removed_count": len(removed),
+        "preserved": preserved,
+        "message": (
+            "Limpeza concluída. Todos os ativos fora da lista protegida "
+            "foram removidos, incluindo suas séries e dados dependentes. "
+            "ABEV3 e BOVA11 foram preservados."
+        ),
+    }
+
+
+
+
 @router.post("/simulation/generate", summary="Gera cotações simuladas para testes")
 async def generate_simulation(asset: str, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
     sim = (await db.execute(select(SystemSetting).where(SystemSetting.key == "simulation_mode"))).scalar_one_or_none()
@@ -65,9 +177,11 @@ async def generate_simulation(asset: str, _: User = Depends(require_admin), db: 
     if not enabled:
         raise HTTPException(status_code=400, detail="Modo simulação está desativado.")
 
+
     asset_obj = (await db.execute(select(Asset).where(Asset.symbol == asset.upper()))).scalar_one_or_none()
     if not asset_obj:
         raise HTTPException(status_code=404, detail="Ativo não encontrado.")
+
 
     db.add(
         AssetQuote(

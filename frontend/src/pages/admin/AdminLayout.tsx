@@ -5,7 +5,6 @@ const links = [
   { to: '/admin/users', label: 'Usuários' },
   { to: '/admin/assets', label: 'Ativos' },
   { to: '/admin/clients', label: 'Clientes/Diagnóstico' },
-  { to: '/admin/logs', label: 'Logs' },
   { to: '/admin/sync', label: 'Sincronização B3' },
 ]
 

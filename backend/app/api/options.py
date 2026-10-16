@@ -2,12 +2,15 @@ from datetime import date
 from decimal import Decimal
 
 
+
 import logging
+
 
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 
 from app.core.deps import get_current_user, require_admin
@@ -19,6 +22,7 @@ from app.services.strike_rules import resolve_series_by_strike
 from app.services.websocket_manager import manager
 
 
+
 from app.services.sync_b3 import (
     B3SyncError,
     sync_from_b3,
@@ -27,10 +31,18 @@ from app.services.sync_b3 import (
 
 
 
+
+
 logger = logging.getLogger(__name__)
 
 
+
+
+
 router = APIRouter(prefix="/options", tags=["Opções"])
+
+
+
 
 
 
@@ -43,21 +55,28 @@ async def list_options(
     stmt = select(OptionSeries)
 
 
+
     if asset:
         asset_obj = (
             await db.execute(select(Asset).where(Asset.symbol == asset.upper()))
         ).scalar_one_or_none()
 
 
+
         if asset_obj:
             stmt = stmt.where(OptionSeries.asset_id == asset_obj.id)
+
 
 
     stmt = stmt.order_by(OptionSeries.expiration_date, OptionSeries.strike)
     rows = (await db.execute(stmt)).scalars().all()
 
 
+
     return [OptionSeriesOut.model_validate(row) for row in rows]
+
+
+
 
 
 
@@ -76,7 +95,11 @@ async def search_options(
     ).scalars().all()
 
 
+
     return [OptionSeriesOut.model_validate(row) for row in rows]
+
+
+
 
 
 
@@ -92,8 +115,19 @@ async def by_expiration(
     ).scalar_one_or_none()
 
 
+
     if not asset_obj:
         raise HTTPException(status_code=404, detail="Ativo não encontrado.")
+
+
+
+
+
+    if not asset_obj.enabled:
+        raise HTTPException(status_code=400, detail="Ativo está desabilitado.")
+
+
+
 
 
     rows = (
@@ -109,7 +143,11 @@ async def by_expiration(
     ).scalars().all()
 
 
+
     return [OptionSeriesOut.model_validate(row) for row in rows]
+
+
+
 
 
 
@@ -120,6 +158,9 @@ async def get_monthly_expiration_dates(
 ) -> list[date]:
     """
     Seleciona um vencimento mensal por mês.
+
+
+
 
 
     Para cada mês, escolhe o dia com o maior número de séries ativas.
@@ -141,7 +182,13 @@ async def get_monthly_expiration_dates(
     ).all()
 
 
+
+
+
     monthly: dict[tuple[int, int], tuple[date, int]] = {}
+
+
+
 
 
     for expiration_date, series_count in rows:
@@ -149,8 +196,14 @@ async def get_monthly_expiration_dates(
         current = monthly.get(key)
 
 
+
+
+
         if current is None or series_count > current[1]:
             monthly[key] = (expiration_date, series_count)
+
+
+
 
 
     selected = [
@@ -159,7 +212,13 @@ async def get_monthly_expiration_dates(
     ]
 
 
+
+
+
     return selected[:limit]
+
+
+
 
 
 
@@ -177,8 +236,19 @@ async def by_strike(
     ).scalar_one_or_none()
 
 
+
     if not asset_obj:
         raise HTTPException(status_code=404, detail="Ativo não encontrado.")
+
+
+
+
+
+    if not asset_obj.enabled:
+        raise HTTPException(status_code=400, detail="Ativo está desabilitado.")
+
+
+
 
 
     expiration_dates = await get_monthly_expiration_dates(
@@ -188,11 +258,17 @@ async def by_strike(
     )
 
 
+
+
+
     tol_row = (
         await db.execute(
             select(SystemSetting).where(SystemSetting.key == "strike_tolerance")
         )
     ).scalar_one_or_none()
+
+
+
 
 
     tolerance = (
@@ -202,16 +278,28 @@ async def by_strike(
     )
 
 
+
+
+
     wanted_types = {item.strip().upper() for item in types.split(",")}
 
 
+
+
+
     result = []
+
+
+
 
 
     for expiration_date in expiration_dates:
         for option_type in [OptionType.CALL, OptionType.PUT]:
             if option_type.value not in wanted_types:
                 continue
+
+
+
 
 
             matched, applied = await resolve_series_by_strike(
@@ -222,6 +310,9 @@ async def by_strike(
                 expiration_date=expiration_date,
                 tolerance=tolerance,
             )
+
+
+
 
 
             if matched:
@@ -249,10 +340,16 @@ async def by_strike(
                 )
 
 
+
+
+
     return {
         "asset": asset_obj.symbol,
         "items": result,
     }
+
+
+
 
 
 
@@ -271,6 +368,9 @@ async def subscribe_strike_capture(
     pelas opções encontradas.
 
 
+
+
+
     Payload esperado:
     {
         "asset": "PETR4",
@@ -285,11 +385,17 @@ async def subscribe_strike_capture(
     types_raw = str(payload.get("types", "CALL,PUT"))
 
 
+
+
+
     if not asset_symbol:
         raise HTTPException(
             status_code=422,
             detail="O campo 'asset' é obrigatório.",
         )
+
+
+
 
 
     try:
@@ -301,7 +407,13 @@ async def subscribe_strike_capture(
         ) from exc
 
 
+
+
+
     expiration_count = max(1, min(expiration_count, 12))
+
+
+
 
 
     asset_obj = (
@@ -311,6 +423,9 @@ async def subscribe_strike_capture(
     ).scalar_one_or_none()
 
 
+
+
+
     if not asset_obj:
         raise HTTPException(
             status_code=404,
@@ -318,11 +433,27 @@ async def subscribe_strike_capture(
         )
 
 
+
+
+
+    if not asset_obj.enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ativo {asset_symbol} está desabilitado.",
+        )
+
+
+
+
+
     expiration_dates = await get_monthly_expiration_dates(
         db,
         asset_obj.id,
         expiration_count,
     )
+
+
+
 
 
     tol_row = (
@@ -334,11 +465,17 @@ async def subscribe_strike_capture(
     ).scalar_one_or_none()
 
 
+
+
+
     tolerance = (
         Decimal(str(tol_row.value.get("value", "0.50")))
         if tol_row
         else Decimal("0.50")
     )
+
+
+
 
 
     wanted_types = {
@@ -348,17 +485,29 @@ async def subscribe_strike_capture(
     }
 
 
+
+
+
     if not wanted_types:
         wanted_types = {"CALL", "PUT"}
 
 
+
+
+
     selected_series: list[OptionSeries] = []
+
+
+
 
 
     for expiration_date in expiration_dates:
         for option_type in [OptionType.CALL, OptionType.PUT]:
             if option_type.value not in wanted_types:
                 continue
+
+
+
 
 
             matched, _applied = await resolve_series_by_strike(
@@ -371,8 +520,14 @@ async def subscribe_strike_capture(
             )
 
 
+
+
+
             if matched:
                 selected_series.append(matched)
+
+
+
 
 
     assets_payload = [
@@ -384,6 +539,9 @@ async def subscribe_strike_capture(
             "rtd_identifier_pattern": asset_obj.rtd_identifier_pattern,
         }
     ]
+
+
+
 
 
     series_payload = [
@@ -400,6 +558,9 @@ async def subscribe_strike_capture(
     ]
 
 
+
+
+
     capture_payload = {
         "asset": asset_obj.symbol,
         "strike": str(strike),
@@ -408,15 +569,24 @@ async def subscribe_strike_capture(
     }
 
 
+
+
+
     capture_demand_store.set(capture_payload)
 
 
-    await manager.broadcast(
+
+
+
+    await manager._broadcast(
         {
             "type": "capture_config",
             "data": capture_payload,
         }
     )
+
+
+
 
 
     return {
@@ -433,6 +603,9 @@ async def subscribe_strike_capture(
 
 
 
+
+
+
 @router.post(
     "/synchronize",
     response_model=SyncSummary,
@@ -444,8 +617,19 @@ async def synchronize(
     db: AsyncSession = Depends(get_db),
 ) -> SyncSummary:
     if payload.source == "b3":
+        b3_url = (
+            payload.b3_url.strip()
+            if payload.b3_url
+            else None
+        )
+
+
+
         try:
-            summary = await sync_from_b3(db)
+            summary = await sync_from_b3(
+                db,
+                b3_url=b3_url,
+            )
             return SyncSummary(**summary)
         except B3SyncError as exc:
             raise HTTPException(
@@ -459,10 +643,16 @@ async def synchronize(
             )
 
 
+
+
+
             raise HTTPException(
                 status_code=502,
                 detail="Falha inesperada ao sincronizar as séries da B3.",
             ) from exc
+
+
+
 
 
     try:

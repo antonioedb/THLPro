@@ -2,9 +2,13 @@ from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
 
 from app.core.deps import (
     get_current_user,
@@ -29,12 +33,20 @@ from app.schemas.assets import (
 )
 from app.schemas.auth import MessageResponse
 from app.schemas.quotes import AssetQuoteIn
+from app.services.capture_demand import capture_demand_store
 from app.services.strike_rules import get_strikes_in_range
+from app.services.websocket_manager import manager
+
+
 
 
 UTC = timezone.utc
 
+
+
 router = APIRouter(prefix="/assets", tags=["Ativos"])
+
+
 
 
 async def _get_asset_by_ref(
@@ -43,8 +55,12 @@ async def _get_asset_by_ref(
 ) -> Asset:
     asset = None
 
+
+
     if ref.isdigit():
         asset = await db.get(Asset, int(ref))
+
+
 
     if not asset:
         asset = (
@@ -53,13 +69,19 @@ async def _get_asset_by_ref(
             )
         ).scalar_one_or_none()
 
+
+
     if not asset:
         raise HTTPException(
             status_code=404,
             detail="Ativo não encontrado.",
         )
 
+
+
     return asset
+
+
 
 
 async def _get_monthly_expiration_dates(
@@ -68,24 +90,23 @@ async def _get_monthly_expiration_dates(
     reference_date: date,
     month_count: int = 6,
 ) -> list[date]:
-    """
-    Retorna até uma data mensal por mês.
-
-    A data mensal escolhida é a que possui a maior quantidade de séries
-    ativas no mês. É a mesma regra usada por /options/by-strike e pelo
-    endpoint /clients/config.
-    """
     target_year = reference_date.year
     target_month = reference_date.month - 1 + month_count
     end_year = target_year + target_month // 12
     end_month = target_month % 12 + 1
+
+
 
     if end_month == 12:
         end_date = date(end_year + 1, 1, 1)
     else:
         end_date = date(end_year, end_month + 1, 1)
 
+
+
     end_date = end_date.fromordinal(end_date.toordinal() - 1)
+
+
 
     rows = (
         await db.execute(
@@ -104,7 +125,11 @@ async def _get_monthly_expiration_dates(
         )
     ).all()
 
+
+
     selected_by_month: dict[tuple[int, int], tuple[date, int]] = {}
+
+
 
     for expiration_date, series_count in rows:
         month_key = (
@@ -113,11 +138,15 @@ async def _get_monthly_expiration_dates(
         )
         current = selected_by_month.get(month_key)
 
+
+
         if current is None or series_count > current[1]:
             selected_by_month[month_key] = (
                 expiration_date,
                 series_count,
             )
+
+
 
     return [
         expiration_date
@@ -126,6 +155,92 @@ async def _get_monthly_expiration_dates(
             key=lambda item: item[0],
         )
     ]
+
+
+
+
+async def _broadcast_asset_capture(
+    db: AsyncSession,
+    asset: Asset,
+) -> int:
+    """
+    Envia ao cliente RTD todas as séries ativas do ativo habilitado.
+
+
+
+    Isso permite que o cliente comece a capturar as cotações das opções
+    imediatamente após a habilitação, antes de o usuário escolher um
+    strike específico no painel.
+    """
+    series_rows = (
+        await db.execute(
+            select(OptionSeries)
+            .where(
+                OptionSeries.asset_id == asset.id,
+                OptionSeries.active.is_(True),
+            )
+            .order_by(
+                OptionSeries.expiration_date,
+                OptionSeries.option_type,
+                OptionSeries.strike,
+            )
+        )
+    ).scalars().all()
+
+
+
+    assets_payload = [
+        {
+            "symbol": asset.symbol,
+            "name": asset.name,
+            "tick_min": str(asset.tick_min),
+            "strike_interval": str(asset.strike_interval),
+            "rtd_identifier_pattern": asset.rtd_identifier_pattern,
+        }
+    ]
+
+
+
+    series_payload = [
+        {
+            "id": series.id,
+            "option_symbol": series.option_symbol,
+            "asset_id": series.asset_id,
+            "option_type": series.option_type.value,
+            "strike": str(series.strike),
+            "expiration_date": series.expiration_date.isoformat(),
+            "rtd_symbol": series.option_symbol,
+        }
+        for series in series_rows
+    ]
+
+
+
+    capture_payload = {
+        "asset": asset.symbol,
+        "strike": None,
+        "assets": assets_payload,
+        "active_series": series_payload,
+    }
+
+
+
+    capture_demand_store.set(capture_payload)
+
+
+
+    await manager._broadcast(
+        {
+            "type": "capture_config",
+            "data": capture_payload,
+        }
+    )
+
+
+
+    return len(series_payload)
+
+
 
 
 @router.get(
@@ -140,12 +255,20 @@ async def list_assets(
 ) -> list[AssetOut]:
     statement = select(Asset).order_by(Asset.symbol)
 
+
+
     if enabled is not None:
         statement = statement.where(Asset.enabled == enabled)
 
+
+
     rows = (await db.execute(statement)).scalars().all()
 
+
+
     return [AssetOut.model_validate(asset) for asset in rows]
+
+
 
 
 @router.post(
@@ -166,20 +289,30 @@ async def create_asset(
         )
     ).scalar_one_or_none()
 
+
+
     if existing:
         raise HTTPException(
             status_code=409,
             detail="Ativo já cadastrado.",
         )
 
+
+
     item = Asset(**payload.model_dump())
     item.symbol = item.symbol.upper()
+
+
 
     db.add(item)
     await db.commit()
     await db.refresh(item)
 
+
+
     return AssetOut.model_validate(item)
+
+
 
 
 @router.get(
@@ -194,7 +327,11 @@ async def get_asset(
 ) -> AssetOut:
     asset = await _get_asset_by_ref(db, ref)
 
+
+
     return AssetOut.model_validate(asset)
+
+
 
 
 @router.put(
@@ -210,15 +347,69 @@ async def update_asset(
 ) -> AssetOut:
     asset = await _get_asset_by_ref(db, ref)
 
-    for key, value in payload.model_dump(
-        exclude_none=True
-    ).items():
+
+
+    updates = payload.model_dump(exclude_none=True)
+
+
+
+    new_symbol = updates.get("symbol")
+
+
+
+    if new_symbol is not None:
+        new_symbol = new_symbol.upper()
+
+
+
+        if new_symbol != asset.symbol:
+            existing = (
+                await db.execute(
+                    select(Asset).where(
+                        Asset.symbol == new_symbol,
+                        Asset.id != asset.id,
+                    )
+                )
+            ).scalar_one_or_none()
+
+
+
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Já existe outro ativo com este código.",
+                )
+
+
+
+        updates["symbol"] = new_symbol
+
+
+
+    was_enabled = asset.enabled
+
+
+
+    for key, value in updates.items():
         setattr(asset, key, value)
+
+
 
     await db.commit()
     await db.refresh(asset)
 
+
+
+    # Gatilho: ao habilitar um ativo, solicita ao cliente RTD a captura
+    # de todas as séries ativas daquele ativo.
+    if not was_enabled and asset.enabled:
+        await _broadcast_asset_capture(db, asset)
+
+
+
     return AssetOut.model_validate(asset)
+
+
 
 
 @router.delete(
@@ -234,11 +425,17 @@ async def delete_asset(
     asset = await _get_asset_by_ref(db, ref)
     asset.enabled = False
 
+
+
     await db.commit()
+
+
 
     return MessageResponse(
         message="Ativo desativado com sucesso."
     )
+
+
 
 
 @router.post(
@@ -253,14 +450,20 @@ async def post_asset_quotes(
     accepted = 0
     rejected: list[dict] = []
 
+
+
     for index, row in enumerate(payload):
         symbol = row.asset.upper()
+
+
 
         asset = (
             await db.execute(
                 select(Asset).where(Asset.symbol == symbol)
             )
         ).scalar_one_or_none()
+
+
 
         if not asset:
             rejected.append(
@@ -270,6 +473,8 @@ async def post_asset_quotes(
                 }
             )
             continue
+
+
 
         item = AssetQuote(
             asset_id=asset.id,
@@ -292,15 +497,23 @@ async def post_asset_quotes(
             data_status=row.data_status,
         )
 
+
+
         db.add(item)
         accepted += 1
 
+
+
     await db.commit()
+
+
 
     return {
         "accepted": accepted,
         "rejected": rejected,
     }
+
+
 
 
 @router.get(
@@ -314,6 +527,8 @@ async def get_spot(
 ) -> dict:
     asset = await _get_asset_by_ref(db, symbol)
 
+
+
     quote = (
         await db.execute(
             select(AssetQuote)
@@ -323,6 +538,8 @@ async def get_spot(
         )
     ).scalar_one_or_none()
 
+
+
     if not quote:
         return {
             "asset": asset.symbol,
@@ -331,6 +548,8 @@ async def get_spot(
             "message": "N/D",
         }
 
+
+
     return {
         "asset": asset.symbol,
         "spot_price": quote.last_price,
@@ -338,6 +557,8 @@ async def get_spot(
         "received_at": quote.received_at,
         "data_status": quote.data_status,
     }
+
+
 
 
 @router.get(
@@ -355,14 +576,9 @@ async def get_strikes(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> StrikeListResponse:
-    """
-    Retorna strikes da faixa do ativo e sua cobertura na curva mensal.
-
-    O campo strikes continua sendo retornado para manter compatibilidade
-    com o frontend. A ordem agora prioriza strikes que possuem CALL e PUT
-    em todos os vencimentos mensais selecionados.
-    """
     asset = await _get_asset_by_ref(db, symbol)
+
+
 
     last_quote = (
         await db.execute(
@@ -378,7 +594,11 @@ async def get_strikes(
         )
     ).scalar_one_or_none()
 
+
+
     spot = Decimal(last_quote.last_price) if last_quote else None
+
+
 
     low, high, strikes_in_range = await get_strikes_in_range(
         db,
@@ -386,7 +606,11 @@ async def get_strikes(
         spot,
     )
 
+
+
     warning = None
+
+
 
     if not strikes_in_range:
         has_series = (
@@ -400,10 +624,14 @@ async def get_strikes(
             )
         ).scalar_one_or_none()
 
+
+
         if not has_series:
             warning = (
                 "Nenhuma série ativa sincronizada para este ativo."
             )
+
+
 
     if spot is None or not strikes_in_range:
         return StrikeListResponse(
@@ -419,7 +647,11 @@ async def get_strikes(
             warning=warning,
         )
 
+
+
     today = datetime.now(UTC).date()
+
+
 
     monthly_expirations = await _get_monthly_expiration_dates(
         db=db,
@@ -428,11 +660,15 @@ async def get_strikes(
         month_count=6,
     )
 
+
+
     if not monthly_expirations:
         warning = (
             "Não foram encontrados vencimentos mensais ativos "
             "para este ativo."
         )
+
+
 
         return StrikeListResponse(
             asset=asset.symbol,
@@ -446,6 +682,8 @@ async def get_strikes(
             data_avail=True,
             warning=warning,
         )
+
+
 
     rows = (
         await db.execute(
@@ -466,17 +704,25 @@ async def get_strikes(
         )
     ).all()
 
+
+
     coverage_by_strike: dict[
         Decimal,
         dict[date, set[OptionType]],
     ] = defaultdict(lambda: defaultdict(set))
+
+
 
     for strike, expiration_date, option_type in rows:
         coverage_by_strike[Decimal(strike)][expiration_date].add(
             option_type
         )
 
+
+
     coverage: list[StrikeCoverageOut] = []
+
+
 
     for strike in strikes_in_range:
         normalized_strike = Decimal(strike)
@@ -484,6 +730,8 @@ async def get_strikes(
             normalized_strike,
             {},
         )
+
+
 
         call_expirations = sum(
             OptionType.CALL in expiration_map.get(
@@ -493,6 +741,8 @@ async def get_strikes(
             for expiration_date in monthly_expirations
         )
 
+
+
         put_expirations = sum(
             OptionType.PUT in expiration_map.get(
                 expiration_date,
@@ -500,6 +750,8 @@ async def get_strikes(
             )
             for expiration_date in monthly_expirations
         )
+
+
 
         complete_pairs = sum(
             (
@@ -515,7 +767,11 @@ async def get_strikes(
             for expiration_date in monthly_expirations
         )
 
+
+
         dates_with_any_side = sorted(expiration_map.keys())
+
+
 
         coverage.append(
             StrikeCoverageOut(
@@ -528,6 +784,8 @@ async def get_strikes(
             )
         )
 
+
+
     coverage.sort(
         key=lambda item: (
             item.complete_pairs != item.monthly_expirations,
@@ -537,7 +795,11 @@ async def get_strikes(
         )
     )
 
+
+
     sorted_strikes = [item.strike for item in coverage]
+
+
 
     recommended_strike = next(
         (
@@ -548,13 +810,19 @@ async def get_strikes(
         None,
     )
 
+
+
     if recommended_strike is None and coverage:
         recommended_strike = coverage[0].strike
+
+
 
         warning = (
             "Nenhum strike possui CALL e PUT em todos os vencimentos "
             "mensais; foi recomendado o strike com maior cobertura."
         )
+
+
 
     return StrikeListResponse(
         asset=asset.symbol,

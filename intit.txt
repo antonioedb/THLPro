@@ -22,20 +22,8 @@ Get-NetTCPConnection -LocalPort 8000 -State Listen |
     Stop-Process -Id $_ -Force
   }
 ----------------------------------------------------
-  
-# iniciar cliente log  
-  
-cd C:\Projetos\THLPro\client
-.\.venv\Scripts\activate
 
 
-python -m thlpro_client 2>&1 |
-  Tee-Object -FilePath .\client_rtd.log |
-  Select-String 'Ativo Inv[áa]lido'
-----------------------------------------------------
-
-ou
-----------------------------------------------------
 cd C:\Projetos\THLPro\client
 .\.venv\Scripts\activate
 
@@ -55,4 +43,7 @@ python -m thlpro_client 2>&1 |
 $lista = $tickers -join ','
 
 $lista
-$lista | Set-Content -LiteralPath "$env:USERPROFILE\Desktop\tickers_invalidos.txt" -Encoding UTF8 
+
+
+# limpar arquivo de log 
+Clear-Content -LiteralPath "C:\Projetos\THLPro\client\invalidos_rtd.log"
