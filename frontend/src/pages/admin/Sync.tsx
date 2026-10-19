@@ -70,9 +70,8 @@ export default function SyncPage() {
 
 
           <p>
-            Acesse a página oficial de séries autorizadas da B3,
-            escolha a data/arquivo do dia e copie o link de download
-            para colar no campo abaixo.
+            Abra a página de Séries Autorizadas da B3, clique com o botão direito em
+            <strong> Lista Completa de Séries Autorizadas</strong>, copie o link e cole abaixo.
           </p>
 
 

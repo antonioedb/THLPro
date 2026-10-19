@@ -17,9 +17,7 @@ import { PremiumChart } from '../components/charts/PremiumChart'
 import { MarketWsClient } from '../lib/ws'
 
 
-
 type Side = 'CALL' | 'PUT'
-
 
 
 interface OptionRow {
@@ -32,27 +30,20 @@ interface OptionRow {
 }
 
 
-
 function hasPositiveQuoteValue(value?: string | null): boolean {
   if (value === undefined || value === null || value === '') {
     return false
   }
 
-
-
   const numeric = Number(value)
-
-
 
   return Number.isFinite(numeric) && numeric > 0
 }
 
 
-
 function formatBookValue(value?: string | null): string {
   return hasPositiveQuoteValue(value) ? fmtNumber(value) : 'N/D'
 }
-
 
 
 function formatStrike(
@@ -63,27 +54,18 @@ function formatStrike(
     return '—'
   }
 
-
-
   const numeric = Number(strike)
-
-
 
   if (!Number.isFinite(numeric)) {
     return strike
   }
 
-
-
   if (assetSymbol.toUpperCase().startsWith('BOVA')) {
     return numeric.toFixed(0)
   }
 
-
-
   return numeric.toFixed(2)
 }
-
 
 
 function isQuoteStale(timestamp?: string | null): boolean {
@@ -91,26 +73,17 @@ function isQuoteStale(timestamp?: string | null): boolean {
     return true
   }
 
-
-
   const quoteTime = new Date(timestamp).getTime()
-
-
 
   if (!Number.isFinite(quoteTime)) {
     return true
   }
 
-
-
   const now = Date.now()
   const fiveMinutes = 5 * 60 * 1000
 
-
-
   return now - quoteTime > fiveMinutes
 }
-
 
 
 export default function MainPage() {
@@ -118,27 +91,17 @@ export default function MainPage() {
   const { prefs, setPrefs } = usePreferences()
   const queryClient = useQueryClient()
 
-
-
   const [wsStatus, setWsStatus] = useState<
     'connecting' | 'connected' | 'disconnected'
   >('disconnected')
-
-
 
   const [wsQuoteMap, setWsQuoteMap] = useState<
     Record<string, QuoteLatestResponse>
   >({})
 
-
-
   const [showSettings, setShowSettings] = useState(false)
 
-
-
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>([])
-
-
 
   const assetsQuery = useQuery({
     queryKey: ['assets'],
@@ -150,26 +113,18 @@ export default function MainPage() {
       ).data,
   })
 
-
-
   useEffect(() => {
     if (!assetsQuery.data?.length) {
       return
     }
 
-
-
     const selectedAssetExists = assetsQuery.data.some(
       (asset) => asset.symbol === prefs.selected_asset,
     )
 
-
-
     if (selectedAssetExists) {
       return
     }
-
-
 
     setPrefs((old) => ({
       ...old,
@@ -183,8 +138,6 @@ export default function MainPage() {
     setPrefs,
   ])
 
-
-
   const strikesQuery = useQuery({
     queryKey: ['strikes', prefs.selected_asset],
     enabled: !!prefs.selected_asset,
@@ -196,41 +149,27 @@ export default function MainPage() {
       ).data,
   })
 
-
-
   const sortedStrikes = useMemo(() => {
     const strikes = strikesQuery.data?.strikes ?? []
-
-
 
     return [...strikes].sort((a, b) => Number(a) - Number(b))
   }, [strikesQuery.data?.strikes])
 
-
-
   useEffect(() => {
     const strikes = strikesQuery.data?.strikes ?? []
-
-
 
     if (!strikes.length) {
       return
     }
 
-
-
     if (strikes.includes(prefs.selected_strike)) {
       return
     }
-
-
 
     const fallbackStrike =
       strikesQuery.data?.recommended_strike
       ?? strikes[0]
       ?? defaultPreferences.selected_strike
-
-
 
     setPrefs((old) => ({
       ...old,
@@ -241,8 +180,6 @@ export default function MainPage() {
     prefs.selected_strike,
     setPrefs,
   ])
-
-
 
   const spotQuery = useQuery({
     queryKey: ['spot', prefs.selected_asset],
@@ -255,15 +192,11 @@ export default function MainPage() {
       ).data,
   })
 
-
-
   const optionTypeParam = (
     `${prefs.show_calls ? 'CALL,' : ''}${
       prefs.show_puts ? 'PUT' : ''
     }`
   ).replace(/,$/, '') || 'CALL,PUT'
-
-
 
   const byStrikeQuery = useQuery({
     queryKey: [
@@ -287,14 +220,10 @@ export default function MainPage() {
       ).data,
   })
 
-
-
   useEffect(() => {
     if (!prefs.selected_asset || !prefs.selected_strike) {
       return
     }
-
-
 
     const requestCapture = async () => {
       try {
@@ -315,8 +244,6 @@ export default function MainPage() {
       }
     }
 
-
-
     requestCapture()
   }, [
     prefs.selected_asset,
@@ -325,16 +252,12 @@ export default function MainPage() {
     optionTypeParam,
   ])
 
-
-
   const settingsQuery = useQuery({
     queryKey: ['admin-settings', user?.role],
     enabled: user?.role === 'admin',
     queryFn: async () =>
       (await api.get<SystemSetting[]>('/admin/settings')).data,
   })
-
-
 
   const quoteSymbols = useMemo(
     () =>
@@ -343,8 +266,6 @@ export default function MainPage() {
         .filter((symbol): symbol is string => !!symbol),
     [byStrikeQuery.data],
   )
-
-
 
   const quotesQuery = useQuery({
     queryKey: [
@@ -366,46 +287,32 @@ export default function MainPage() {
             },
           )
 
-
-
           return [symbol, data] as const
         }),
       )
 
-
-
       return Object.fromEntries(rows)
     },
   })
-
-
 
   useEffect(() => {
     if (!prefs.auto_refresh) {
       return
     }
 
-
-
     const timer = window.setInterval(() => {
       queryClient.invalidateQueries({
         queryKey: ['spot', prefs.selected_asset],
       })
 
-
-
       queryClient.invalidateQueries({
         queryKey: ['latest-quotes', prefs.selected_asset],
       })
-
-
 
       queryClient.invalidateQueries({
         queryKey: ['strikes', prefs.selected_asset],
       })
     }, prefs.refresh_interval * 1000)
-
-
 
     return () => window.clearInterval(timer)
   }, [
@@ -415,14 +322,10 @@ export default function MainPage() {
     queryClient,
   ])
 
-
-
   useEffect(() => {
     if (!token) {
       return
     }
-
-
 
     const ws = new MarketWsClient({
       token,
@@ -431,14 +334,10 @@ export default function MainPage() {
         if (event.type === 'snapshot' && Array.isArray(event.data)) {
           const map: Record<string, QuoteLatestResponse> = {}
 
-
-
           event.data.forEach((item: any) => {
             if (!item.option_symbol) {
               return
             }
-
-
 
             map[item.option_symbol] = {
               asset: item.asset,
@@ -451,15 +350,11 @@ export default function MainPage() {
             }
           })
 
-
-
           setWsQuoteMap((old) => ({
             ...old,
             ...map,
           }))
         }
-
-
 
         if (
           event.type === 'quote'
@@ -468,13 +363,9 @@ export default function MainPage() {
         ) {
           const data: any = event.data
 
-
-
           if (!data.option_symbol) {
             return
           }
-
-
 
           setWsQuoteMap((old) => ({
             ...old,
@@ -492,16 +383,10 @@ export default function MainPage() {
       },
     })
 
-
-
     ws.connect()
-
-
 
     return () => ws.stop()
   }, [token])
-
-
 
   const quoteMap = useMemo(
     () => ({
@@ -510,8 +395,6 @@ export default function MainPage() {
     }),
     [quotesQuery.data, wsQuoteMap],
   )
-
-
 
   const rows = useMemo<OptionRow[]>(() => {
     return (byStrikeQuery.data?.items ?? []).map((item) => ({
@@ -526,88 +409,58 @@ export default function MainPage() {
     }))
   }, [byStrikeQuery.data, quoteMap])
 
-
-
   const callRows = rows.filter((row) => row.side === 'CALL')
   const putRows = rows.filter((row) => row.side === 'PUT')
-
-
 
   const simulationMode = useMemo(() => {
     const setting = settingsQuery.data?.find(
       (item) => item.key === 'simulation_mode',
     )
 
-
-
     return Boolean(setting?.value?.value)
   }, [settingsQuery.data])
-
-
 
   const chartData = useMemo(() => {
     const byExpiration: Record<string, any> = {}
 
-
-
     const assetRoot = prefs.selected_asset.replace(/[0-9]+$/, '')
-
-
 
     const getShortSymbol = (symbol?: string | null) => {
       if (!symbol) {
         return null
       }
 
-
-
       if (symbol.startsWith(assetRoot)) {
         return symbol.slice(assetRoot.length)
       }
 
-
-
       return symbol
     }
 
-
-
     rows.forEach((row) => {
       const key = fmtDateMonth(row.expiration_date)
-
-
 
       byExpiration[key] ??= {
         vencimento: key,
       }
 
-
-
       const premium = row.quote?.premium ?? row.quote?.last_price
-
-
 
       if (row.side === 'CALL') {
         byExpiration[key].call = hasPositiveQuoteValue(premium)
           ? Number(premium)
           : null
 
-
-
         byExpiration[key].call_symbol = row.option_symbol
         byExpiration[key].call_symbol_short = getShortSymbol(
           row.option_symbol,
         )
-
-
 
         byExpiration[key].call_bid = hasPositiveQuoteValue(
           row.quote?.bid,
         )
           ? Number(row.quote?.bid)
           : null
-
-
 
         byExpiration[key].call_ask = hasPositiveQuoteValue(
           row.quote?.ask,
@@ -619,22 +472,16 @@ export default function MainPage() {
           ? Number(premium)
           : null
 
-
-
         byExpiration[key].put_symbol = row.option_symbol
         byExpiration[key].put_symbol_short = getShortSymbol(
           row.option_symbol,
         )
-
-
 
         byExpiration[key].put_bid = hasPositiveQuoteValue(
           row.quote?.bid,
         )
           ? Number(row.quote?.bid)
           : null
-
-
 
         byExpiration[key].put_ask = hasPositiveQuoteValue(
           row.quote?.ask,
@@ -644,12 +491,8 @@ export default function MainPage() {
       }
     })
 
-
-
     return Object.values(byExpiration)
   }, [rows, prefs.selected_asset])
-
-
 
   const toggleSymbol = (symbol: string) => {
     setSelectedSymbols((old) => {
@@ -657,13 +500,9 @@ export default function MainPage() {
         return old.filter((item) => item !== symbol)
       }
 
-
-
       return [...old, symbol]
     })
   }
-
-
 
   const statusColor =
     wsStatus === 'connected'
@@ -672,99 +511,146 @@ export default function MainPage() {
         ? 'yellow'
         : 'red'
 
-
-
   return (
-    <div className="space-y-4">
-      <section className="panel flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <Badge color={spotQuery.isError ? 'red' : 'green'}>
-            Servidor {spotQuery.isError ? 'offline' : 'online'}
-          </Badge>
+    <div className="space-y-3">
+      <section className="panel p-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Ativo
+              </span>
+              <span className="text-base font-semibold">
+                {prefs.selected_asset}
+              </span>
+            </div>
 
+            <div className="flex items-center gap-2">
+              <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Preço
+              </span>
+              <span className="text-base font-semibold">
+                {fmtNumber(spotQuery.data?.spot_price)}
+              </span>
+            </div>
 
+            <div className="flex items-center gap-2">
+              <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Atualizado
+              </span>
+              <span className="font-medium">
+                {fmtTime(spotQuery.data?.quote_timestamp)}
+              </span>
+            </div>
 
-          <Badge color={statusColor}>
-            WS {wsStatus}
-          </Badge>
+            <div className="flex items-center gap-2">
+              <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Faixa
+              </span>
+              <span className="font-medium">
+                {formatStrike(
+                  strikesQuery.data?.range_low,
+                  prefs.selected_asset,
+                )}
+                {' – '}
+                {formatStrike(
+                  strikesQuery.data?.range_high,
+                  prefs.selected_asset,
+                )}
+              </span>
+            </div>
 
+            {strikesQuery.data?.warning && (
+              <Badge color="violet">
+                Strikes aprox.
+              </Badge>
+            )}
+          </div>
 
-
-          <Badge
-            color={spotQuery.data?.spot_price ? 'green' : 'yellow'}
-          >
-            {spotQuery.data?.spot_price
-              ? 'Profit/RTD com dados'
-              : 'Aguardando dados do Profit…'}
-          </Badge>
-
-
-
-          {simulationMode && (
-            <Badge color="blue">
-              Dados simulados de teste
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge color={spotQuery.isError ? 'red' : 'green'}>
+              Servidor {spotQuery.isError ? 'off' : 'on'}
             </Badge>
-          )}
 
+            <Badge color={statusColor}>
+              WS {wsStatus}
+            </Badge>
 
+            <Badge
+              color={spotQuery.data?.spot_price ? 'green' : 'yellow'}
+            >
+              {spotQuery.data?.spot_price
+                ? 'RTD OK'
+                : 'Aguardando RTD'}
+            </Badge>
 
-          <span>
-            Última atualização global:{' '}
-            {fmtTime(spotQuery.data?.quote_timestamp)}
-          </span>
+            {simulationMode && (
+              <Badge color="blue">
+                Simulado
+              </Badge>
+            )}
+
+            <button
+              className="btn-secondary"
+              onClick={() => queryClient.invalidateQueries()}
+            >
+              Atualizar
+            </button>
+
+            <button
+              className="btn-secondary"
+              onClick={() => setShowSettings((value) => !value)}
+            >
+              Config.
+            </button>
+          </div>
         </div>
 
-
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            className="btn-secondary"
-            onClick={() => queryClient.invalidateQueries()}
-          >
-            Atualizar
-          </button>
-
-
-
-          <button
-            className="btn-secondary"
-            onClick={() => setShowSettings((value) => !value)}
-          >
-            Configurações
-          </button>
-        </div>
-      </section>
-
-
-
-      {showSettings && (
-        <section className="panel grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
           <label className="field">
-            <span>Tema</span>
-
-
+            <span className="text-xs">Ativo</span>
 
             <select
               className="input"
-              value={prefs.theme}
+              value={prefs.selected_asset}
               onChange={(event) =>
                 setPrefs((old) => ({
                   ...old,
-                  theme: event.target.value as 'light' | 'dark',
+                  selected_asset: event.target.value,
                 }))
               }
             >
-              <option value="dark">Escuro</option>
-              <option value="light">Claro</option>
+              {assetsQuery.data?.map((asset) => (
+                <option key={asset.id} value={asset.symbol}>
+                  {asset.symbol}
+                </option>
+              ))}
             </select>
           </label>
 
+          <label className="field">
+            <span className="text-xs">Strike</span>
 
+            <select
+              className="input"
+              value={prefs.selected_strike}
+              onChange={(event) =>
+                setPrefs((old) => ({
+                  ...old,
+                  selected_strike: event.target.value,
+                }))
+              }
+            >
+              {sortedStrikes.map((strike) => (
+                <option key={strike} value={strike}>
+                  {formatStrike(strike, prefs.selected_asset)}
+                </option>
+              ))}
+            </select>
+          </label>
 
           <label className="field">
-            <span>Vencimentos</span>
-
-
+            <span className="text-xs">Vencimentos</span>
 
             <input
               className="input"
@@ -781,212 +667,91 @@ export default function MainPage() {
             />
           </label>
 
-
-
           <label className="field">
-            <span>Tolerância atual</span>
-            <input
-              className="input"
-              value="Definida pelo backend"
-              disabled
-            />
-          </label>
-
-
-
-          <label className="field">
-            <span>Atualização automática</span>
-
-
+            <span className="text-xs">Lados</span>
 
             <select
               className="input"
-              value={prefs.auto_refresh ? 'on' : 'off'}
+              value={`${prefs.show_calls ? '1' : '0'}${
+                prefs.show_puts ? '1' : '0'
+              }`}
+              onChange={(event) => {
+                const value = event.target.value
+
+                setPrefs((old) => ({
+                  ...old,
+                  show_calls: value[0] === '1',
+                  show_puts: value[1] === '1',
+                }))
+              }}
+            >
+              <option value="11">CALL + PUT</option>
+              <option value="10">CALL</option>
+              <option value="01">PUT</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span className="text-xs">Refresh</span>
+
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={60}
+              value={prefs.refresh_interval}
               onChange={(event) =>
                 setPrefs((old) => ({
                   ...old,
-                  auto_refresh: event.target.value === 'on',
+                  refresh_interval: Number(event.target.value),
                 }))
               }
-            >
-              <option value="on">Ligada</option>
-              <option value="off">Desligada</option>
-            </select>
+            />
           </label>
-        </section>
-      )}
-
-
-
-      <section className="panel grid grid-cols-1 gap-3 lg:grid-cols-6">
-        <label className="field lg:col-span-1">
-          <span>Ativo</span>
-
-
-
-          <select
-            className="input"
-            value={prefs.selected_asset}
-            onChange={(event) =>
-              setPrefs((old) => ({
-                ...old,
-                selected_asset: event.target.value,
-              }))
-            }
-          >
-            {assetsQuery.data?.map((asset) => (
-              <option key={asset.id} value={asset.symbol}>
-                {asset.symbol}
-              </option>
-            ))}
-          </select>
-        </label>
-
-
-
-        <label className="field lg:col-span-2">
-          <span>Strike</span>
-
-
-
-          <select
-            className="input"
-            value={prefs.selected_strike}
-            onChange={(event) =>
-              setPrefs((old) => ({
-                ...old,
-                selected_strike: event.target.value,
-              }))
-            }
-          >
-            {sortedStrikes.map((strike) => (
-              <option key={strike} value={strike}>
-                {formatStrike(strike, prefs.selected_asset)}
-              </option>
-            ))}
-          </select>
-        </label>
-
-
-
-        <label className="field lg:col-span-1">
-          <span>Qtd. vencimentos</span>
-
-
-
-          <input
-            className="input"
-            type="number"
-            min={1}
-            max={12}
-            value={prefs.expiration_count}
-            onChange={(event) =>
-              setPrefs((old) => ({
-                ...old,
-                expiration_count: Number(event.target.value),
-              }))
-            }
-          />
-        </label>
-
-
-
-        <label className="field lg:col-span-1">
-          <span>Lados</span>
-
-
-
-          <select
-            className="input"
-            value={`${prefs.show_calls ? '1' : '0'}${
-              prefs.show_puts ? '1' : '0'
-            }`}
-            onChange={(event) => {
-              const value = event.target.value
-
-
-
-              setPrefs((old) => ({
-                ...old,
-                show_calls: value[0] === '1',
-                show_puts: value[1] === '1',
-              }))
-            }}
-          >
-            <option value="11">CALL + PUT</option>
-            <option value="10">Somente CALL</option>
-            <option value="01">Somente PUT</option>
-          </select>
-        </label>
-
-
-
-        <label className="field lg:col-span-1">
-          <span>Intervalo refresh (s)</span>
-
-
-
-          <input
-            className="input"
-            type="number"
-            min={1}
-            max={60}
-            value={prefs.refresh_interval}
-            onChange={(event) =>
-              setPrefs((old) => ({
-                ...old,
-                refresh_interval: Number(event.target.value),
-              }))
-            }
-          />
-        </label>
-      </section>
-
-
-
-      <section className="panel grid grid-cols-1 gap-2 text-sm md:grid-cols-2 lg:grid-cols-4">
-        <div>
-          <h4 className="font-semibold">Ativo</h4>
-          <p>{prefs.selected_asset}</p>
         </div>
 
+        {showSettings && (
+          <div className="mt-3 grid grid-cols-1 gap-2 border-t border-slate-200 pt-3 dark:border-slate-700 md:grid-cols-3">
+            <label className="field">
+              <span className="text-xs">Tema</span>
 
+              <select
+                className="input"
+                value={prefs.theme}
+                onChange={(event) =>
+                  setPrefs((old) => ({
+                    ...old,
+                    theme: event.target.value as 'light' | 'dark',
+                  }))
+                }
+              >
+                <option value="dark">Escuro</option>
+                <option value="light">Claro</option>
+              </select>
+            </label>
 
-        <div>
-          <h4 className="font-semibold">Último preço</h4>
-          <p>{fmtNumber(spotQuery.data?.spot_price)}</p>
-        </div>
+            <label className="field">
+              <span className="text-xs">Atualização automática</span>
 
-
-
-        <div>
-          <h4 className="font-semibold">Horário da atualização</h4>
-          <p>{fmtTime(spotQuery.data?.quote_timestamp)}</p>
-        </div>
-
-
-
-        <div>
-          <h4 className="font-semibold">Faixa de strikes</h4>
-          <p>
-            {formatStrike(strikesQuery.data?.range_low, prefs.selected_asset)}
-            {' – '}
-            {formatStrike(strikesQuery.data?.range_high, prefs.selected_asset)}
-          </p>
-        </div>
-
-
-
-        {strikesQuery.data?.warning && (
-          <p className="text-violet-500 md:col-span-2 lg:col-span-4">
-            Strikes aproximados
-          </p>
+              <select
+                className="input"
+                value={prefs.auto_refresh ? 'on' : 'off'}
+                onChange={(event) =>
+                  setPrefs((old) => ({
+                    ...old,
+                    auto_refresh: event.target.value === 'on',
+                  }))
+                }
+              >
+                <option value="on">Ligada</option>
+                <option value="off">Desligada</option>
+              </select>
+            </label>
+          </div>
         )}
       </section>
 
-
-
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <section className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         {prefs.show_calls && (
           <OptionTable
             title="CALL"
@@ -997,8 +762,6 @@ export default function MainPage() {
             onToggleSymbol={toggleSymbol}
           />
         )}
-
-
 
         {prefs.show_puts && (
           <OptionTable
@@ -1012,9 +775,7 @@ export default function MainPage() {
         )}
       </section>
 
-
-
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <section className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         {prefs.show_calls && (
           <PremiumChart
             data={chartData}
@@ -1022,8 +783,6 @@ export default function MainPage() {
             selectedSymbols={selectedSymbols}
           />
         )}
-
-
 
         {prefs.show_puts && (
           <PremiumChart
@@ -1036,7 +795,6 @@ export default function MainPage() {
     </div>
   )
 }
-
 
 
 function OptionTable({
@@ -1057,7 +815,7 @@ function OptionTable({
   return (
     <div className="panel overflow-auto">
       <h3
-        className={`mb-3 text-sm font-semibold ${
+        className={`mb-2 text-sm font-semibold ${
           title === 'CALL'
             ? 'text-sky-500'
             : 'text-orange-400'
@@ -1066,23 +824,19 @@ function OptionTable({
         {title}
       </h3>
 
-
-
       <table className="table text-sm">
         <thead>
           <tr>
             <th className="w-10"></th>
             <th>Venc.</th>
             <th>Código</th>
-            <th>Strike usado</th>
+            <th>Strike</th>
             <th>BID</th>
             <th>ASK</th>
             <th>Último</th>
-            <th>Atualização</th>
+            <th>Hora</th>
           </tr>
         </thead>
-
-
 
         <tbody>
           {rows.map((row, index) => {
@@ -1091,32 +845,22 @@ function OptionTable({
               || row.quote?.message === 'N/D'
             )
 
-
-
             const usedStrike = (
               row.matched_strike
               ?? row.requested_strike
             )
-
-
 
             const adjustedStrike = (
               !!row.matched_strike
               && row.matched_strike !== requestedStrike
             )
 
-
-
             const isSelected = (
               !!row.option_symbol
               && selectedSymbols.includes(row.option_symbol)
             )
 
-
-
             const stale = isQuoteStale(row.quote?.quote_timestamp)
-
-
 
             return (
               <tr
@@ -1145,36 +889,29 @@ function OptionTable({
                   )}
                 </td>
 
-
-
                 <td>{fmtDateMonth(row.expiration_date)}</td>
 
-
-
                 <td>
-                  {row.option_symbol ?? '— sem opção —'}
+                  {row.option_symbol ?? '—'}
                 </td>
-
-
 
                 <td
                   title={
                     adjustedStrike
                       ? (
-                          `Strike solicitado: ${
+                          `Solicitado: ${
                             formatStrike(
                               requestedStrike,
                               assetSymbol,
                             )
-                          }; `
-                          + `strike encontrado: ${
+                          }; encontrado: ${
                             formatStrike(
                               row.matched_strike,
                               assetSymbol,
                             )
                           }`
                         )
-                      : `Strike solicitado: ${
+                      : `Solicitado: ${
                           formatStrike(
                             requestedStrike,
                             assetSymbol,
@@ -1188,15 +925,11 @@ function OptionTable({
                   )}
                 </td>
 
-
-
                 <td>
                   {noData
                     ? 'N/D'
                     : formatBookValue(row.quote?.bid)}
                 </td>
-
-
 
                 <td>
                   {noData
@@ -1204,15 +937,11 @@ function OptionTable({
                     : formatBookValue(row.quote?.ask)}
                 </td>
 
-
-
                 <td>
                   {noData
                     ? 'N/D'
                     : formatBookValue(row.quote?.last_price)}
                 </td>
-
-
 
                 <td>
                   {noData ? (
@@ -1226,7 +955,7 @@ function OptionTable({
                       }
                     >
                       {fmtTime(row.quote?.quote_timestamp)}
-                      {stale ? ' (ver book)' : ''}
+                      {stale ? ' *' : ''}
                     </span>
                   )}
                 </td>
