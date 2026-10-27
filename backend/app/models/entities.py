@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 
+
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -23,7 +24,9 @@ from sqlalchemy import (
 )
 
 
+
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 
 
 from app.models.base import Base, TimestampMixin
@@ -52,6 +55,7 @@ class User(Base, TimestampMixin):
     __tablename__ = "users"
 
 
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
@@ -64,6 +68,7 @@ class User(Base, TimestampMixin):
 
 class Asset(Base, TimestampMixin):
     __tablename__ = "assets"
+
 
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -85,6 +90,7 @@ class OptionSeries(Base, TimestampMixin):
     __tablename__ = "option_series"
 
 
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
     option_symbol: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
@@ -98,7 +104,9 @@ class OptionSeries(Base, TimestampMixin):
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+
     asset: Mapped[Asset] = relationship("Asset")
+
 
 
     __table_args__ = (
@@ -111,6 +119,7 @@ class OptionSeries(Base, TimestampMixin):
 
 class AssetQuote(Base):
     __tablename__ = "asset_quotes"
+
 
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -132,22 +141,34 @@ class MarketQuote(Base):
     """
     Cotação atual de uma opção.
 
+
     Regra de negócio:
     - Existe apenas uma linha por option_series_id.
     - O primeiro cliente que capturar a opção cria a linha.
     - Os demais clientes apenas atualizam essa mesma linha.
-    - A atualização ocorre somente quando last_price, bid ou ask mudam.
+    - A atualização ocorre somente quando last_price, bid, ask ou trade_count mudam.
+
+
+    Campos de negócios:
+    - trade_count: último NEG recebido do RTD.
+    - last_trade_count: total de negócios do último pregão em que o NEG aumentou.
+    - last_trade_date: data do último pregão em que o NEG aumentou.
     """
     __tablename__ = "market_quotes"
 
 
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
 
     asset_id: Mapped[int] = mapped_column(
         ForeignKey("assets.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
+
+
 
     option_series_id: Mapped[int] = mapped_column(
         ForeignKey("option_series.id", ondelete="CASCADE"),
@@ -156,17 +177,30 @@ class MarketQuote(Base):
         index=True,
     )
 
+
+
     last_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 6), nullable=True)
     bid: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 6), nullable=True)
     ask: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 6), nullable=True)
     premium: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 6), nullable=True)
+    trade_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+    last_trade_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+
+
 
     quote_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+
+
     source: Mapped[str] = mapped_column(String(30), nullable=False)
     client_id: Mapped[Optional[int]] = mapped_column(ForeignKey("clients.id"), nullable=True)
     data_status: Mapped[str] = mapped_column(String(10), nullable=False, default="OK")
+
+
 
     sequence: Mapped[int] = mapped_column(
         BigInteger,
@@ -174,7 +208,11 @@ class MarketQuote(Base):
         server_default=text("nextval('market_quote_sequence')"),
     )
 
+
+
     option_series: Mapped[OptionSeries] = relationship("OptionSeries")
+
+
 
     __table_args__ = (
         Index(
@@ -187,12 +225,17 @@ class MarketQuote(Base):
             "asset_id",
             "quote_timestamp",
         ),
+        Index(
+            "ix_market_quotes_last_trade_date",
+            "last_trade_date",
+        ),
     )
 
 
 
 class Client(Base):
     __tablename__ = "clients"
+
 
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -212,6 +255,7 @@ class UserPreference(Base, TimestampMixin):
     __tablename__ = "user_preferences"
 
 
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
     selected_asset: Mapped[str] = mapped_column(String(30), nullable=False, default="BOVA11")
@@ -229,6 +273,7 @@ class SynchronizationLog(Base):
     __tablename__ = "synchronization_logs"
 
 
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     client_id: Mapped[Optional[int]] = mapped_column(ForeignKey("clients.id"), nullable=True)
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -236,6 +281,7 @@ class SynchronizationLog(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     payload_summary: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
 
 
     __table_args__ = (
@@ -246,6 +292,7 @@ class SynchronizationLog(Base):
 
 class SystemSetting(Base):
     __tablename__ = "system_settings"
+
 
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -260,20 +307,27 @@ class Lease(Base):
     __tablename__ = "leases"
 
 
+
     option_series_id: Mapped[int] = mapped_column(
         ForeignKey("option_series.id", ondelete="CASCADE"),
         primary_key=True,
     )
+
+
 
     client_id: Mapped[int] = mapped_column(
         ForeignKey("clients.id"),
         nullable=False,
     )
 
+
+
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
     )
+
+
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -282,10 +336,6 @@ class Lease(Base):
     )
 
 
+
     option_series: Mapped[OptionSeries] = relationship("OptionSeries")
     client: Mapped[Client] = relationship("Client")
-
-
-    __table_args__ = (
-        Index("ix_leases_expires_at", "expires_at"),
-    )

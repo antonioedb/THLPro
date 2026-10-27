@@ -1,15 +1,21 @@
 export type UserRole = 'admin' | 'user'
 
+
+
 export interface LoginRequest {
   email: string
   password: string
 }
+
+
 
 export interface TokenResponse {
   access_token: string
   token_type: string
   expires_in_seconds: number
 }
+
+
 
 export interface MeResponse {
   id: number
@@ -18,6 +24,8 @@ export interface MeResponse {
   role: UserRole
   active: boolean
 }
+
+
 
 export interface Asset {
   id: number
@@ -34,24 +42,38 @@ export interface Asset {
   source: string
 }
 
+
+
 export interface StrikeCoverage {
   strike: string
+
+
 
   // Quantidade total de vencimentos mensais usados na curva.
   monthly_expirations: number
 
+
+
   // Em quantos vencimentos há uma CALL ativa para esse strike.
   call_expirations: number
+
+
 
   // Em quantos vencimentos há uma PUT ativa para esse strike.
   put_expirations: number
 
+
+
   // Em quantos vencimentos há CALL e PUT simultaneamente.
   complete_pairs: number
+
+
 
   // Datas mensais nas quais existe ao menos uma série ativa para o strike.
   monthly_dates: string[]
 }
+
+
 
 export interface StrikeListResponse {
   asset: string
@@ -59,23 +81,35 @@ export interface StrikeListResponse {
   range_low: string | null
   range_high: string | null
 
+
+
   // Mantido para compatibilidade. O backend agora ordena os strikes pela
   // melhor cobertura de CALL + PUT nos vencimentos mensais.
   strikes: string[]
 
+
+
   // Cobertura detalhada de cada strike na curva mensal.
   strike_coverage: StrikeCoverage[]
 
+
+
   // Datas mensais usadas para calcular a cobertura.
   monthly_expirations: string[]
+
+
 
   // Strike mais próximo do spot com CALL + PUT em todos os vencimentos
   // mensais; quando não houver cobertura completa, é o de maior cobertura.
   recommended_strike: string | null
 
+
+
   data_avail: boolean
   warning?: string | null
 }
+
+
 
 export interface SpotResponse {
   asset: string
@@ -85,6 +119,8 @@ export interface SpotResponse {
   data_status?: string
   message?: string
 }
+
+
 
 export interface ByStrikeItem {
   expiration_date: string
@@ -96,10 +132,14 @@ export interface ByStrikeItem {
   status?: string
 }
 
+
+
 export interface ByStrikeResponse {
   asset: string
   items: ByStrikeItem[]
 }
+
+
 
 export interface QuoteLatestResponse {
   asset: string
@@ -108,11 +148,16 @@ export interface QuoteLatestResponse {
   bid?: string | null
   ask?: string | null
   premium?: string | null
+  trade_count?: number | null
+  last_trade_count?: number | null
+  last_trade_date?: string | null
   quote_timestamp?: string
   received_at?: string
   data_status?: string
   message?: string
 }
+
+
 
 export interface ClientStatusItem {
   id: number
@@ -123,6 +168,8 @@ export interface ClientStatusItem {
   last_error: string | null
 }
 
+
+
 export interface SyncSummary {
   created: number
   updated: number
@@ -130,12 +177,16 @@ export interface SyncSummary {
   errors: string[]
 }
 
+
+
 export interface SystemSetting {
   key: string
   value: Record<string, unknown>
   description: string
   updated_at: string
 }
+
+
 
 export interface AdminLog {
   id: number
@@ -147,6 +198,8 @@ export interface AdminLog {
   created_at: string
 }
 
+
+
 export interface UserOut {
   id: number
   name: string
@@ -156,6 +209,8 @@ export interface UserOut {
   created_at: string
   updated_at: string
 }
+
+
 
 export interface UserPreference {
   selected_asset: string
@@ -168,12 +223,16 @@ export interface UserPreference {
   theme: 'light' | 'dark'
 }
 
+
+
 export interface WsMarketEvent {
   type: 'quote' | 'snapshot' | 'status'
   data?: Array<Record<string, unknown>> | Record<string, unknown>
   message?: string
 }
 export type OptionSeriesStatus = 'active' | 'expired' | 'inactive'
+
+
 
 
 export interface OptionSeries {
@@ -189,6 +248,8 @@ export interface OptionSeries {
 }
 
 
+
+
 export interface OptionSeriesListResponse {
   items: OptionSeries[]
   total: number
@@ -196,6 +257,8 @@ export interface OptionSeriesListResponse {
   expired_count: number
   inactive_count: number
 }
+
+
 
 
 export interface SeriesSyncStatus {
@@ -207,6 +270,8 @@ export interface SeriesSyncStatus {
   file_name: string | null
   file_last_modified: string | null
 }
+
+
 
 
 export interface SeriesSyncResponse {

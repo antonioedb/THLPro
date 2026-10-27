@@ -3,15 +3,24 @@ from decimal import Decimal
 
 
 
+
+
+
 UTC = timezone.utc
 
 
 
+
+
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+
 
 
 
@@ -25,7 +34,13 @@ from app.services.websocket_manager import manager
 
 
 
+
+
+
 router = APIRouter(prefix="/quotes", tags=["Cotações"])
+
+
+
 
 
 
@@ -43,11 +58,17 @@ async def _resolve_asset_series(
 
 
 
+
+
+
     if not asset:
         raise HTTPException(
             status_code=404,
             detail=f"Ativo {asset_symbol} não cadastrado.",
         )
+
+
+
 
 
 
@@ -63,6 +84,9 @@ async def _resolve_asset_series(
 
 
 
+
+
+
     if not series:
         raise HTTPException(
             status_code=404,
@@ -71,7 +95,13 @@ async def _resolve_asset_series(
 
 
 
+
+
+
     return asset, series
+
+
+
 
 
 
@@ -91,11 +121,17 @@ async def _resolve_series_by_id(
 
 
 
+
+
+
     if not series:
         raise HTTPException(
             status_code=404,
             detail=f"Série {option_series_id} não encontrada ou inativa.",
         )
+
+
+
 
 
 
@@ -107,6 +143,9 @@ async def _resolve_series_by_id(
 
 
 
+
+
+
     if not asset:
         raise HTTPException(
             status_code=404,
@@ -115,7 +154,13 @@ async def _resolve_series_by_id(
 
 
 
+
+
+
     return asset, series
+
+
+
 
 
 
@@ -140,6 +185,9 @@ async def post_quotes(
 
 
 
+
+
+
 @router.post(
     "/client",
     response_model=QuoteBatchResponse,
@@ -160,6 +208,9 @@ async def post_quotes_client(
 
 
 
+
+
+
 async def _process_quotes(
     payload: list[QuoteIn],
     db: AsyncSession,
@@ -172,9 +223,15 @@ async def _process_quotes(
 
 
 
+
+
+
     # Captura o ID antes de qualquer commit.
     # Após commit(), atributos ORM podem expirar e causar MissingGreenlet.
     client_id = client.id if client else None
+
+
+
 
 
 
@@ -184,13 +241,22 @@ async def _process_quotes(
     deduplicated: dict[int, QuoteIn] = {}
 
 
+
+
+
     for row in payload:
         if row.option_series_id is not None:
             deduplicated[row.option_series_id] = row
 
 
 
+
+
+
     rows_to_process = list(deduplicated.values())
+
+
+
 
 
 
@@ -201,6 +267,9 @@ async def _process_quotes(
                 quote_ts,
                 settings.max_future_skew_seconds,
             )
+
+
+
 
 
 
@@ -220,10 +289,16 @@ async def _process_quotes(
 
 
 
+
+
+
             rounded_last = round_by_tick(
                 row.last_price,
                 Decimal(asset.tick_min),
             )
+
+
+
 
 
 
@@ -234,10 +309,16 @@ async def _process_quotes(
 
 
 
+
+
+
             rounded_ask = round_by_tick(
                 row.ask,
                 Decimal(asset.tick_min),
             )
+
+
+
 
 
 
@@ -248,7 +329,21 @@ async def _process_quotes(
 
 
 
+
+
+
+            trade_count = row.trade_count
+            quote_date = quote_ts.date()
+
+
+
+
+
+
             received_at = datetime.now(UTC)
+
+
+
 
 
 
@@ -259,12 +354,42 @@ async def _process_quotes(
                 bid=rounded_bid,
                 ask=rounded_ask,
                 premium=premium,
+                trade_count=trade_count,
+                last_trade_count=trade_count,
+                last_trade_date=None,
                 quote_timestamp=quote_ts,
                 received_at=received_at,
                 source=row.source,
                 client_id=client_id,
                 data_status=row.data_status,
             )
+
+
+
+
+
+
+            # Valor novo de NEG disponível no UPSERT.
+            incoming_trade_count = stmt.excluded.trade_count
+
+
+
+            # last_trade_count e last_trade_date avançam apenas
+            # quando o NEG aumenta. Se for igual, menor ou nulo,
+            # preservamos o último pregão com negócio confirmado.
+            trade_increased = (
+                incoming_trade_count.is_not(None)
+                & (
+                    MarketQuote.last_trade_count.is_(None)
+                    | (
+                        incoming_trade_count
+                        > MarketQuote.last_trade_count
+                    )
+                )
+            )
+
+
+
 
 
 
@@ -275,6 +400,21 @@ async def _process_quotes(
                     "bid": rounded_bid,
                     "ask": rounded_ask,
                     "premium": premium,
+                    "trade_count": incoming_trade_count,
+                    "last_trade_count": case(
+                        (
+                            trade_increased,
+                            incoming_trade_count,
+                        ),
+                        else_=MarketQuote.last_trade_count,
+                    ),
+                    "last_trade_date": case(
+                        (
+                            trade_increased,
+                            quote_date,
+                        ),
+                        else_=MarketQuote.last_trade_date,
+                    ),
                     "quote_timestamp": quote_ts,
                     "received_at": received_at,
                     "source": row.source,
@@ -285,12 +425,23 @@ async def _process_quotes(
                     (MarketQuote.last_price.is_distinct_from(rounded_last))
                     | (MarketQuote.bid.is_distinct_from(rounded_bid))
                     | (MarketQuote.ask.is_distinct_from(rounded_ask))
+                    | (
+                        MarketQuote.trade_count.is_distinct_from(
+                            incoming_trade_count
+                        )
+                    )
                 ),
             )
 
 
 
+
+
+
             result = await db.execute(stmt)
+
+
+
 
 
 
@@ -308,7 +459,13 @@ async def _process_quotes(
 
 
 
+
+
+
             accepted += 1
+
+
+
 
 
 
@@ -321,10 +478,14 @@ async def _process_quotes(
                         "last_price": float(rounded_last) if rounded_last is not None else None,
                         "bid": float(rounded_bid) if rounded_bid is not None else None,
                         "ask": float(rounded_ask) if rounded_ask is not None else None,
+                        "trade_count": trade_count,
                         "quote_timestamp": quote_ts.isoformat(),
                     },
                 }
             )
+
+
+
 
 
 
@@ -340,6 +501,9 @@ async def _process_quotes(
 
 
 
+
+
+
         except IntegrityError:
             await db.rollback()
             rejected.append(
@@ -352,11 +516,20 @@ async def _process_quotes(
 
 
 
+
+
+
     await db.commit()
 
 
 
+
+
+
     return QuoteBatchResponse(accepted=accepted, rejected=rejected)
+
+
+
 
 
 
@@ -387,8 +560,14 @@ async def get_quotes(
 
 
 
+
+
+
     if asset:
         stmt = stmt.where(Asset.symbol == asset.upper())
+
+
+
 
 
 
@@ -399,8 +578,14 @@ async def get_quotes(
 
 
 
+
+
+
     if from_ts:
         stmt = stmt.where(MarketQuote.quote_timestamp >= from_ts)
+
+
+
 
 
 
@@ -409,11 +594,20 @@ async def get_quotes(
 
 
 
+
+
+
     stmt = stmt.order_by(MarketQuote.quote_timestamp.desc()).limit(1000)
 
 
 
+
+
+
     rows = (await db.execute(stmt)).all()
+
+
+
 
 
 
@@ -425,6 +619,9 @@ async def get_quotes(
             "bid": quote_row.bid,
             "ask": quote_row.ask,
             "premium": quote_row.premium,
+            "trade_count": quote_row.trade_count,
+            "last_trade_count": quote_row.last_trade_count,
+            "last_trade_date": quote_row.last_trade_date,
             "quote_timestamp": quote_row.quote_timestamp,
             "received_at": quote_row.received_at,
             "data_status": quote_row.data_status,
@@ -432,6 +629,9 @@ async def get_quotes(
         }
         for quote_row, series_row, asset_row in rows
     ]
+
+
+
 
 
 
@@ -454,6 +654,9 @@ async def latest(
 
 
 
+
+
+
     last = (
         await db.execute(
             select(MarketQuote)
@@ -471,6 +674,9 @@ async def latest(
 
 
 
+
+
+
     if not last:
         return {
             "asset": asset_obj.symbol,
@@ -481,6 +687,9 @@ async def latest(
 
 
 
+
+
+
     return {
         "asset": asset_obj.symbol,
         "option_symbol": series.option_symbol,
@@ -488,10 +697,16 @@ async def latest(
         "bid": last.bid,
         "ask": last.ask,
         "premium": last.premium,
+        "trade_count": last.trade_count,
+        "last_trade_count": last.last_trade_count,
+        "last_trade_date": last.last_trade_date,
         "quote_timestamp": last.quote_timestamp,
         "received_at": last.received_at,
         "data_status": last.data_status,
     }
+
+
+
 
 
 
@@ -515,6 +730,9 @@ async def history(
 
 
 
+
+
+
     rows = (
         await db.execute(
             select(MarketQuote)
@@ -532,12 +750,18 @@ async def history(
 
 
 
+
+
+
     return [
         {
             "last_price": quote.last_price,
             "bid": quote.bid,
             "ask": quote.ask,
             "premium": quote.premium,
+            "trade_count": quote.trade_count,
+            "last_trade_count": quote.last_trade_count,
+            "last_trade_date": quote.last_trade_date,
             "quote_timestamp": quote.quote_timestamp,
             "received_at": quote.received_at,
             "data_status": quote.data_status,
